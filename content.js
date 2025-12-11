@@ -8,6 +8,8 @@
   let currentSettings = { maxHeight: 12000, isCollapsed: false }; // Default ~500 lines at 24px
   let lastUrl = location.href;
   let isApplying = false;
+  let cachedContainer = null;
+  let originalTotalHeight = 0;
 
   // Load settings from storage
   async function loadSettings() {
@@ -26,7 +28,12 @@
   }
 
   // Find the main scroll container - look for the one with the most scrollable content
-  function getScrollContainer() {
+  function getScrollContainer(forceRefresh = false) {
+    // Return cached container if still valid and in document
+    if (!forceRefresh && cachedContainer && document.contains(cachedContainer)) {
+      return cachedContainer;
+    }
+
     const containers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"]');
     let best = null;
     let bestScrollHeight = 0;
@@ -39,13 +46,31 @@
       // Skip left sidebar (typically narrow and on the left)
       if (rect.left < 100 && rect.width < 350) continue;
 
+      // Must be in the main content area (not too far left)
+      if (rect.left < 200 && rect.width < 500) continue;
+
       // Prefer container with most scrollable content
-      if (container.scrollHeight > bestScrollHeight) {
+      // But require minimum height to avoid picking small UI elements
+      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > 1000) {
         best = container;
         bestScrollHeight = container.scrollHeight;
       }
     }
 
+    // Fallback: if no large container found, pick any reasonable one
+    if (!best) {
+      for (const container of containers) {
+        const rect = container.getBoundingClientRect();
+        if (rect.width > 400 && rect.height > 200) {
+          if (container.scrollHeight > bestScrollHeight) {
+            best = container;
+            bestScrollHeight = container.scrollHeight;
+          }
+        }
+      }
+    }
+
+    cachedContainer = best;
     console.log('Claude Leash: Found container with scrollHeight', bestScrollHeight);
     return best;
   }
@@ -117,13 +142,7 @@
 
     currentSettings = { maxHeight, isCollapsed };
 
-    const container = getScrollContainer();
-    if (!container) {
-      isApplying = false;
-      return { success: false, error: 'No scroll container found' };
-    }
-
-    // Unhide any previously hidden elements
+    // Unhide any previously hidden elements first (to get accurate measurements)
     if (window.claudeLeashHidden) {
       window.claudeLeashHidden.forEach(el => {
         el.style.removeProperty('display');
@@ -131,7 +150,21 @@
       window.claudeLeashHidden = [];
     }
 
+    // Small delay to let DOM update after unhiding
+    const container = getScrollContainer();
+    if (!container) {
+      isApplying = false;
+      return { success: false, error: 'No scroll container found' };
+    }
+
+    // Get total height AFTER unhiding everything
     const totalHeight = container.scrollHeight;
+
+    // Track original total for display purposes
+    if (totalHeight > originalTotalHeight) {
+      originalTotalHeight = totalHeight;
+    }
+
     let hiddenHeight = 0;
 
     if (isCollapsed && totalHeight > maxHeight) {
@@ -172,20 +205,23 @@
     // Calculate visible height
     const visibleHeight = Math.max(0, totalHeight - hiddenHeight);
 
+    // Use original total for consistent display
+    const displayTotal = Math.max(originalTotalHeight, totalHeight);
+
     // Update badge
     setTimeout(() => {
-      updateBadge(visibleHeight, totalHeight, isCollapsed);
+      updateBadge(visibleHeight, displayTotal, isCollapsed);
       isApplying = false;
     }, 150);
 
-    console.log(`Claude Leash: ${isCollapsed ? 'Collapsed' : 'Expanded'} - ${Math.round(visibleHeight/1000)}k/${Math.round(totalHeight/1000)}k px visible`);
+    console.log(`Claude Leash: ${isCollapsed ? 'Collapsed' : 'Expanded'} - ${Math.round(visibleHeight/1000)}k/${Math.round(displayTotal/1000)}k px visible`);
     return {
       success: true,
-      totalHeight,
+      totalHeight: displayTotal,
       hiddenHeight,
       visibleHeight,
       // For backwards compatibility with popup
-      total: totalHeight,
+      total: displayTotal,
       hidden: hiddenHeight,
       visible: visibleHeight
     };
@@ -207,6 +243,8 @@
       if (location.href !== lastUrl) {
         lastUrl = location.href;
         window.claudeLeashHidden = null;
+        cachedContainer = null; // Clear cached container on URL change
+        originalTotalHeight = 0; // Reset total height tracking
 
         // Reapply after content loads
         [500, 1500, 3000].forEach(delay => {
@@ -255,7 +293,9 @@
 
         case 'debug':
           // Highlight the scroll container and its content
-          const cont = getScrollContainer();
+          // Force refresh to find the best container
+          cachedContainer = null;
+          const cont = getScrollContainer(true);
           if (cont) {
             cont.style.outline = '3px solid red';
             const elements = findContentElements(cont);
