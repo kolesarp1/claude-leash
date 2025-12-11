@@ -42,7 +42,33 @@ Claude Leash hides older messages from the DOM while keeping them in Claude's co
 
 The extension uses CSS `display: none` to hide message elements from rendering. The messages remain in the DOM and Claude's context - they're just not being painted by the browser.
 
-**Detection strategy:**
+### Performance vs RAM
+
+**What `display: none` saves:**
+| Benefit | Impact |
+|---------|--------|
+| Render tree memory | ✅ Reduced |
+| Layout calculations | ✅ Skipped |
+| Paint operations | ✅ Eliminated |
+| GPU compositing layers | ✅ Freed |
+| Computed style recalcs | ✅ Avoided |
+
+**What remains in memory:**
+| Resource | Status |
+|----------|--------|
+| DOM nodes | Still in memory |
+| Text content | Still stored |
+| Event listeners | Remain attached |
+| Images/media | May stay cached |
+| JavaScript references | Intact |
+
+**Bottom line:** The real win is CPU/GPU performance, not RAM reduction. You'll notice:
+- Smoother scrolling
+- Faster typing in the input box
+- Less UI jank when Claude streams responses
+- Reduced battery drain on laptops
+
+### Detection Strategy
 - Finds elements with `font-user-message` class (user messages)
 - Finds elements with `font-claude-response` class (Claude responses)
 - Walks up DOM to find message containers
