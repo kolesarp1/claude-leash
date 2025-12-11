@@ -8,6 +8,7 @@
   let lastUrl = location.href;
   let cachedMessages = []; // Cache found messages to track total even when hidden
   let originalTotal = 0; // Track original count before hiding
+  let isApplying = false; // Prevent re-entry during apply
 
   // Count approximate lines in an element based on text content
   function countLines(element) {
@@ -223,6 +224,8 @@
 
   // Apply collapse/expand
   function applyCollapse(keepVisible, isCollapsed, cropMode = 'messages', maxLines = 500) {
+    if (isApplying) return { success: true, total: originalTotal, hidden: 0, visible: originalTotal };
+    isApplying = true;
     currentSettings = { keepVisible, isCollapsed, cropMode, maxLines };
 
     // First, unhide everything
@@ -334,8 +337,11 @@
     // Refresh scrollbar after DOM changes
     setTimeout(refreshScrollbar, 100);
 
-    // Update badge
-    setTimeout(reportStatus, 150);
+    // Update badge and clear re-entry lock
+    setTimeout(() => {
+      reportStatus();
+      isApplying = false;
+    }, 200);
 
     return {
       success: true,
@@ -409,10 +415,27 @@
     setInterval(() => {
       if (!currentSettings.isCollapsed) return;
 
-      // Check if we should reapply
+      // Temporarily unhide everything to get accurate count
+      const hiddenElements = [];
+      if (window.claudeLeashAllElements) {
+        window.claudeLeashAllElements.forEach(el => {
+          if (el.style.display === 'none') {
+            hiddenElements.push(el);
+            el.style.removeProperty('display');
+          }
+        });
+      }
+
+      // Check if we should reapply (new content added)
       const messages = findMessages();
-      if (messages.length > 0 && messages.length !== originalTotal) {
-        console.log('Claude Leash: Detected content change, reapplying...');
+      const newTotal = messages.length;
+
+      // Re-hide what was hidden before
+      hiddenElements.forEach(el => el.style.setProperty('display', 'none', 'important'));
+
+      // Only reapply if total INCREASED (new messages added)
+      if (newTotal > originalTotal && originalTotal > 0) {
+        console.log('Claude Leash: Detected new content, reapplying...');
         applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed, currentSettings.cropMode, currentSettings.maxLines);
       }
     }, 2000);
