@@ -301,13 +301,24 @@
     setInterval(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        setTimeout(() => {
-          if (currentSettings.isCollapsed) {
-            applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
-          } else {
-            reportStatus();
-          }
-        }, 500);
+        // Reset cached data on URL change
+        cachedMessages = [];
+        originalTotal = 0;
+        window.claudeLeashAllElements = null;
+        window.claudeLeashUserMessages = null;
+
+        // For Claude Code Web, wait longer and retry multiple times
+        // because session content loads asynchronously
+        const retryDelays = isClaudeCode() ? [500, 1000, 2000, 3000] : [500];
+        retryDelays.forEach(delay => {
+          setTimeout(() => {
+            if (currentSettings.isCollapsed) {
+              applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
+            } else {
+              reportStatus();
+            }
+          }, delay);
+        });
       }
     }, 300);
   }
@@ -325,9 +336,24 @@
       }, 500);
     });
 
-    const scrollContainer = document.querySelector('[class*="overflow-y-auto"]');
-    const target = scrollContainer || document.body;
-    observer.observe(target, { childList: true, subtree: true });
+    // Observe document body to catch all changes including session switches
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Periodic check for Claude Code Web - reapply if messages are found but not hidden
+  function watchForLateContent() {
+    if (!isClaudeCode()) return;
+
+    setInterval(() => {
+      if (!currentSettings.isCollapsed) return;
+
+      // Check if we should reapply
+      const messages = findMessages();
+      if (messages.length > 0 && messages.length !== originalTotal) {
+        console.log('Claude Leash: Detected content change, reapplying...');
+        applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
+      }
+    }, 2000);
   }
 
   // Listen for messages from popup and background
@@ -491,6 +517,7 @@
     await loadSettings();
     watchUrlChanges();
     watchNewMessages();
+    watchForLateContent();
     setTimeout(reportStatus, 1000);
   }
 
