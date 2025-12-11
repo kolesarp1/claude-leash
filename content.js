@@ -191,11 +191,17 @@
       
       // Also find standalone image containers in the conversation
       // These may be file attachments that aren't inside text message containers
-      const allImages = document.querySelectorAll('img[src*="blob:"], img[src*="file"], img[src*="upload"], [class*="file-thumbnail"], [class*="attachment"]');
+      // Broad selector: any img in conversation area that's not tiny (icons)
+      const allImages = document.querySelectorAll('img');
       for (const img of allImages) {
+        const imgRect = img.getBoundingClientRect();
+        // Skip tiny images (icons, avatars) and images outside conversation area
+        if (imgRect.width < 50 || imgRect.height < 50) continue;
+        if (imgRect.left < 100) continue; // Skip sidebar images
+
         // Walk up to find a reasonable container
         let container = img;
-        for (let i = 0; i < 8; i++) {
+        for (let i = 0; i < 10; i++) {
           const parent = container.parentElement;
           if (!parent) break;
 
@@ -206,10 +212,11 @@
           container = parent;
         }
 
-        // Only add if not already in foundContainers and in conversation area
+        // Only add if in conversation area (reasonable position and size)
         const rect = container.getBoundingClientRect();
         if (rect.left > 100 && rect.width > 100 && rect.height > 50) {
           foundContainers.add(container);
+          console.log('Claude.ai: Found image container at y=' + Math.round(rect.top));
         }
       }
 
