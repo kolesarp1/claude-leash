@@ -107,43 +107,50 @@
       }
     } else {
       // === Regular Claude.ai ===
-      // Strategy: Find each user message, then find its container that includes
-      // both the user message AND Claude's response as one unit
+      // Strategy: Find containers that have BOTH user message AND Claude response
+      // but NOT multiple user messages (which would mean we went too high)
 
       const userMessages = document.querySelectorAll('[class*="font-user-message"]');
-      console.log('Claude.ai: Found', userMessages.length, 'user messages');
+      const claudeResponses = document.querySelectorAll('[class*="font-claude-response"]');
+      console.log('Claude.ai: Found', userMessages.length, 'user messages,', claudeResponses.length, 'responses');
 
       if (userMessages.length > 0) {
         const turnContainers = [];
 
         for (const userMsg of userMessages) {
           let container = userMsg;
-          let foundFullTurn = false;
+          let bestContainer = userMsg;
 
-          // Walk up looking for a container that has BOTH user message AND Claude response
+          // Walk up looking for the right level
           for (let i = 0; i < 15; i++) {
             const parent = container.parentElement;
             if (!parent) break;
 
             const rect = parent.getBoundingClientRect();
-            // Stop if container is too wide (main scroll area)
             if (rect.width > 900) break;
 
-            // Check if parent contains a Claude response
-            const claudeResp = parent.querySelector('[class*="font-claude-response"]');
-            if (claudeResp) {
-              // This parent contains both user message and Claude response
-              container = parent;
-              foundFullTurn = true;
+            // Count user messages in this parent
+            const userMsgsInParent = parent.querySelectorAll('[class*="font-user-message"]').length;
+            const claudeRespsInParent = parent.querySelectorAll('[class*="font-claude-response"]').length;
+
+            // If parent has more than one user message, we've gone too high
+            // Use current container as the best one
+            if (userMsgsInParent > 1) {
               break;
+            }
+
+            // If parent has exactly one user message AND at least one Claude response
+            // this could be our turn container
+            if (userMsgsInParent === 1 && claudeRespsInParent >= 1) {
+              bestContainer = parent;
             }
 
             container = parent;
           }
 
           // Only add if we haven't already added this container
-          if (!turnContainers.includes(container)) {
-            turnContainers.push(container);
+          if (!turnContainers.includes(bestContainer)) {
+            turnContainers.push(bestContainer);
           }
         }
 
