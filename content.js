@@ -107,55 +107,47 @@
       }
     } else {
       // === Regular Claude.ai ===
-      // Strategy: Find containers that have BOTH user message AND Claude response
-      // but NOT multiple user messages (which would mean we went too high)
+      // Simple approach: count user messages, hide everything above a cutoff point
 
-      const userMessages = document.querySelectorAll('[class*="font-user-message"]');
-      const claudeResponses = document.querySelectorAll('[class*="font-claude-response"]');
-      console.log('Claude.ai: Found', userMessages.length, 'user messages,', claudeResponses.length, 'responses');
+      const userMessages = [...document.querySelectorAll('[class*="font-user-message"]')];
+      console.log('Claude.ai: Found', userMessages.length, 'user messages');
 
       if (userMessages.length > 0) {
-        const turnContainers = [];
+        // Sort user messages by vertical position
+        userMessages.sort((a, b) => {
+          return a.getBoundingClientRect().top - b.getBoundingClientRect().top;
+        });
 
-        for (const userMsg of userMessages) {
-          let container = userMsg;
-          let bestContainer = userMsg;
-
-          // Walk up looking for the right level
-          for (let i = 0; i < 15; i++) {
-            const parent = container.parentElement;
-            if (!parent) break;
-
-            const rect = parent.getBoundingClientRect();
-            if (rect.width > 900) break;
-
-            // Count user messages in this parent
-            const userMsgsInParent = parent.querySelectorAll('[class*="font-user-message"]').length;
-            const claudeRespsInParent = parent.querySelectorAll('[class*="font-claude-response"]').length;
-
-            // If parent has more than one user message, we've gone too high
-            // Use current container as the best one
-            if (userMsgsInParent > 1) {
-              break;
-            }
-
-            // If parent has exactly one user message AND at least one Claude response
-            // this could be our turn container
-            if (userMsgsInParent === 1 && claudeRespsInParent >= 1) {
-              bestContainer = parent;
-            }
-
-            container = parent;
+        // Find the conversation container (walk up from first user message)
+        let conversationContainer = null;
+        let current = userMessages[0];
+        for (let i = 0; i < 20; i++) {
+          const parent = current.parentElement;
+          if (!parent) break;
+          const rect = parent.getBoundingClientRect();
+          if (rect.width > 900) {
+            conversationContainer = parent;
+            break;
           }
-
-          // Only add if we haven't already added this container
-          if (!turnContainers.includes(bestContainer)) {
-            turnContainers.push(bestContainer);
-          }
+          current = parent;
         }
 
-        messages = turnContainers;
-        console.log('Claude.ai: Found', messages.length, 'full message turns');
+        if (conversationContainer) {
+          // Get all direct children of conversation container
+          const allChildren = [...conversationContainer.querySelectorAll(':scope > div')].filter(el => {
+            const rect = el.getBoundingClientRect();
+            return rect.height > 20 && rect.width > 100;
+          });
+
+          // Store user messages and all hideable elements
+          messages = userMessages; // For counting
+          window.claudeLeashAllElements = allChildren; // For hiding
+          window.claudeLeashUserMessages = userMessages; // For cutoff point
+
+          console.log('Claude.ai: Found', allChildren.length, 'hideable elements');
+        } else {
+          messages = userMessages;
+        }
       }
     }
     
@@ -190,31 +182,42 @@
   // Apply collapse/expand
   function applyCollapse(keepVisible, isCollapsed) {
     currentSettings = { keepVisible, isCollapsed };
-    
-    // First, unhide everything to get accurate message list
+
+    // First, unhide everything
+    if (window.claudeLeashAllElements) {
+      window.claudeLeashAllElements.forEach(el => el.style.removeProperty('display'));
+    }
     cachedMessages.forEach(msg => msg.style.removeProperty('display'));
-    
-    // Find all messages (now that nothing is hidden)
+
+    // Find all messages (user messages for counting)
     const messages = findMessages();
-    cachedMessages = messages; // Cache for later
-    originalTotal = messages.length; // Track original total
-    
-    const total = messages.length;
+    cachedMessages = messages;
+    originalTotal = messages.length;
+
+    const total = messages.length; // Number of user messages
     const hideCount = Math.max(0, total - keepVisible);
     let actuallyHidden = 0;
 
     console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} - total: ${total}, keep: ${keepVisible}, will hide: ${isCollapsed ? hideCount : 0}`);
 
-    messages.forEach((msg, i) => {
-      if (i < hideCount && isCollapsed) {
-        msg.style.setProperty('display', 'none', 'important');
-        actuallyHidden++;
-      } else {
-        msg.style.removeProperty('display');
+    if (isCollapsed && hideCount > 0 && window.claudeLeashUserMessages && window.claudeLeashAllElements) {
+      // Find the cutoff point - the Nth user message from the start
+      const cutoffUserMsg = window.claudeLeashUserMessages[hideCount - 1];
+      if (cutoffUserMsg) {
+        const cutoffY = cutoffUserMsg.getBoundingClientRect().bottom;
+
+        // Hide all elements above the cutoff point
+        window.claudeLeashAllElements.forEach(el => {
+          const rect = el.getBoundingClientRect();
+          if (rect.bottom <= cutoffY + 50) { // +50 for margin
+            el.style.setProperty('display', 'none', 'important');
+            actuallyHidden++;
+          }
+        });
       }
-    });
-    
-    console.log(`Claude Leash: Applied - ${actuallyHidden} hidden, ${total - actuallyHidden} visible`);
+    }
+
+    console.log(`Claude Leash: Applied - ${actuallyHidden} elements hidden, keeping ${keepVisible} messages`);
 
     // Refresh scrollbar after DOM changes
     setTimeout(refreshScrollbar, 100);
@@ -225,8 +228,8 @@
     return {
       success: true,
       total,
-      hidden: actuallyHidden,
-      visible: total - actuallyHidden
+      hidden: hideCount,
+      visible: total - hideCount
     };
   }
 
