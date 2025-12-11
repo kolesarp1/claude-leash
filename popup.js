@@ -131,15 +131,15 @@
     if (response && response.success) {
       const { total, hidden } = response;
       if (hidden > 0) {
-        statusEl.textContent = `${hidden} of ${total} messages hidden`;
+        statusEl.textContent = `${hidden} of ${total} turns hidden`;
       } else if (isCollapsed) {
-        statusEl.textContent = `${total} messages (all visible)`;
+        statusEl.textContent = `${total} turns (all visible)`;
       } else {
-        statusEl.textContent = `${total} messages`;
+        statusEl.textContent = `${total} turns`;
       }
       statusEl.classList.remove('not-claude');
     } else {
-      statusEl.textContent = response?.error || 'No messages found';
+      statusEl.textContent = response?.error || 'No turns found';
     }
   }
 

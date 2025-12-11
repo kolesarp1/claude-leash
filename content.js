@@ -107,143 +107,53 @@
       }
     } else {
       // === Regular Claude.ai ===
-      // Strategy: Find elements containing font-user-message or font-claude-response
-      // These are the actual message blocks we want to hide/show
-      
-      const userMessages = document.querySelectorAll('[class*="font-user-message"]');
-      const claudeResponses = document.querySelectorAll('[class*="font-claude-response"]');
-      
-      console.log('Claude.ai: Raw counts - user:', userMessages.length, 'claude:', claudeResponses.length);
-      
-      // Find top-level message containers
-      // For user messages: walk up to find a reasonable container
-      const foundContainers = new Set();
+      // Strategy: Find TURN containers (user message + Claude response = 1 turn)
+      // This gives intuitive counting: "keep last 4 turns" = last 4 Q&A exchanges
 
-      // Process user messages
+      const userMessages = document.querySelectorAll('[class*="font-user-message"]');
+      console.log('Claude.ai: Found', userMessages.length, 'user messages (turns)');
+
+      // For each user message, walk up to find the TURN container
+      // The turn container should include: user message + any attachments + Claude's response
+      const turnContainers = new Set();
+
       for (const userMsg of userMessages) {
         let container = userMsg;
-        // Walk up to find a container that's a reasonable size
-        for (let i = 0; i < 8; i++) {
+        let lastValidContainer = userMsg;
+
+        // Walk up the DOM looking for the turn container
+        // The turn container is typically a direct child of the conversation list
+        for (let i = 0; i < 15; i++) {
           const parent = container.parentElement;
           if (!parent) break;
 
           const rect = parent.getBoundingClientRect();
-          // Stop if we hit a very wide container (likely the main scroll area)
+          // Stop if we hit a very wide container (main scroll area)
           if (rect.width > 900) break;
-          // Stop if we hit something with many children (likely the turn list)
-          const siblings = [...parent.children].filter(c => c.tagName === 'DIV');
-          if (siblings.length > 3) {
-            // This parent is the turn list, so current container is the turn
+
+          // Check if this parent has many siblings (conversation list)
+          const siblings = [...parent.children].filter(c => {
+            if (c.tagName !== 'DIV') return false;
+            const r = c.getBoundingClientRect();
+            return r.height > 20; // Substantial children only
+          });
+
+          if (siblings.length > 4) {
+            // This parent is the conversation list
+            // Current container is a turn container
             break;
           }
+
+          lastValidContainer = container;
           container = parent;
         }
 
-        // Check if this container has siblings with images (attachments)
-        // If so, go up one more level to include attachments
-        const containerParent = container.parentElement;
-        if (containerParent) {
-          const siblingImages = containerParent.querySelectorAll(':scope > div img, :scope > div [class*="image"], :scope > div [class*="attachment"]');
-          const parentRect = containerParent.getBoundingClientRect();
-          if (siblingImages.length > 0 && parentRect.width <= 900) {
-            // Check parent's parent to see if it's the turn list
-            const grandparent = containerParent.parentElement;
-            if (grandparent) {
-              const grandSiblings = [...grandparent.children].filter(c => c.tagName === 'DIV');
-              if (grandSiblings.length > 2) {
-                // Parent is the turn container that includes both text and attachments
-                container = containerParent;
-              }
-            }
-          }
-        }
-
-        foundContainers.add(container);
-      }
-      
-      // Process Claude responses similarly
-      for (const resp of claudeResponses) {
-        // Skip if nested inside another claude-response
-        let isNested = false;
-        let parent = resp.parentElement;
-        while (parent) {
-          if (parent.className?.includes?.('font-claude-response')) {
-            isNested = true;
-            break;
-          }
-          parent = parent.parentElement;
-        }
-        if (isNested) continue;
-        
-        let container = resp;
-        for (let i = 0; i < 8; i++) {
-          const parent = container.parentElement;
-          if (!parent) break;
-          
-          const rect = parent.getBoundingClientRect();
-          if (rect.width > 900) break;
-          const siblings = [...parent.children].filter(c => c.tagName === 'DIV');
-          if (siblings.length > 3) break;
-          container = parent;
-        }
-        foundContainers.add(container);
-      }
-      
-      // Also find standalone image containers in the conversation
-      // These may be file attachments that aren't inside text message containers
-      // Only look for LARGE images (actual screenshots, not avatars/icons)
-      const allImages = document.querySelectorAll('img');
-      for (const img of allImages) {
-        const imgRect = img.getBoundingClientRect();
-        // Skip small images (icons, avatars) - real screenshots are usually >150px
-        if (imgRect.width < 150 || imgRect.height < 100) continue;
-        if (imgRect.left < 100) continue; // Skip sidebar images
-
-        // Walk up to find a reasonable container
-        let container = img;
-        for (let i = 0; i < 10; i++) {
-          const parent = container.parentElement;
-          if (!parent) break;
-
-          const rect = parent.getBoundingClientRect();
-          if (rect.width > 900) break;
-          const siblings = [...parent.children].filter(c => c.tagName === 'DIV');
-          if (siblings.length > 3) break;
-          container = parent;
-        }
-
-        // Only add if in conversation area and not already in a found container
-        const rect = container.getBoundingClientRect();
-        const alreadyFound = [...foundContainers].some(fc => fc.contains(container) || container.contains(fc));
-        if (!alreadyFound && rect.left > 100 && rect.width > 100 && rect.height > 50) {
-          foundContainers.add(container);
-          console.log('Claude.ai: Found standalone image at y=' + Math.round(rect.top), 'size=' + Math.round(imgRect.width) + 'x' + Math.round(imgRect.height));
-        }
+        // Use the container we found
+        turnContainers.add(container);
       }
 
-      // Convert to array and filter out tiny/invisible elements and UI components
-      messages = [...foundContainers].filter(el => {
-        const rect = el.getBoundingClientRect();
-        // Must have reasonable size
-        if (rect.height < 30 || rect.width < 100) return false;
-        // Skip elements that are just model selectors or other UI
-        const text = el.innerText?.trim() || '';
-        const hasImage = el.querySelector('img') !== null;
-        // Allow elements with images even if text is short
-        if (text.length < 20 && !hasImage) return false;
-        // Skip if it's in the input area (bottom of page, near Reply input)
-        if (rect.top > window.innerHeight - 200 && rect.height < 150) return false;
-        return true;
-      });
-      
-      console.log('Claude.ai: Found', messages.length, 'message containers');
-      
-      // If we have too many (found individual blocks not turns), try to pair them
-      // Count unique user messages as our turn count
-      const turnCount = userMessages.length;
-      console.log('Claude.ai: User turn count:', turnCount);
-      
-      console.log('Claude.ai: Total found:', messages.length);
+      messages = [...turnContainers];
+      console.log('Claude.ai: Found', messages.length, 'turn containers');
     }
     
     // Sort by vertical position
