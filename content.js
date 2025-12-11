@@ -133,10 +133,31 @@
         }
 
         if (conversationContainer) {
-          // Get all direct children of conversation container
-          const allChildren = [...conversationContainer.querySelectorAll(':scope > div')].filter(el => {
+          // Find the actual message list - look for container with many children
+          let messageList = conversationContainer;
+          for (let depth = 0; depth < 5; depth++) {
+            const children = [...messageList.children].filter(c => c.tagName === 'DIV');
+            if (children.length > 5) {
+              // Found the level with many children
+              break;
+            }
+            // Go deeper - find first substantial child
+            const firstChild = children.find(c => {
+              const rect = c.getBoundingClientRect();
+              return rect.height > 100;
+            });
+            if (firstChild) {
+              messageList = firstChild;
+            } else {
+              break;
+            }
+          }
+
+          // Get all children at this level
+          const allChildren = [...messageList.children].filter(el => {
+            if (el.tagName !== 'DIV') return false;
             const rect = el.getBoundingClientRect();
-            return rect.height > 20 && rect.width > 100;
+            return rect.height > 30 && rect.width > 100;
           });
 
           // Store user messages and all hideable elements
@@ -144,7 +165,7 @@
           window.claudeLeashAllElements = allChildren; // For hiding
           window.claudeLeashUserMessages = userMessages; // For cutoff point
 
-          console.log('Claude.ai: Found', allChildren.length, 'hideable elements');
+          console.log('Claude.ai: Found', allChildren.length, 'hideable elements at message list level');
         } else {
           messages = userMessages;
         }
