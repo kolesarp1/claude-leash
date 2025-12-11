@@ -1,4 +1,4 @@
-// Claude Leash - Popup Script (Simplified)
+// Claude Leash - Popup Script
 (function() {
   'use strict';
 
@@ -7,13 +7,16 @@
 
   let currentTab = null;
   let isCollapsed = false;
-  let maxLines = 500;
+  let maxHeight = 12000; // pixels
+  let scale = 1;
   let currentTheme = 'light';
 
   // Elements
   const statusEl = document.getElementById('status');
   const sliderEl = document.getElementById('slider');
   const sliderValueEl = document.getElementById('sliderValue');
+  const scaleSliderEl = document.getElementById('scaleSlider');
+  const scaleValueEl = document.getElementById('scaleValue');
   const toggleBtn = document.getElementById('toggleBtn');
   const toggleIcon = document.getElementById('toggleIcon');
   const toggleText = document.getElementById('toggleText');
@@ -22,6 +25,14 @@
   const themeLightBtn = document.getElementById('themeLightBtn');
   const themeDarkBtn = document.getElementById('themeDarkBtn');
   const themeAutoBtn = document.getElementById('themeAutoBtn');
+
+  // Format pixel value for display
+  function formatPixels(px) {
+    if (px >= 1000) {
+      return Math.round(px / 1000) + 'k';
+    }
+    return px.toString();
+  }
 
   // ============ Theme handling ============
   function applyTheme(theme) {
@@ -70,11 +81,19 @@
     try {
       const result = await chrome.storage.local.get(STORAGE_KEY);
       if (result[STORAGE_KEY]) {
-        maxLines = result[STORAGE_KEY].maxLines || 500;
+        // Support both old (maxLines) and new (maxHeight) settings
+        if (result[STORAGE_KEY].maxHeight) {
+          maxHeight = result[STORAGE_KEY].maxHeight;
+        } else if (result[STORAGE_KEY].maxLines) {
+          maxHeight = result[STORAGE_KEY].maxLines * 24; // Convert old format
+        }
+        scale = result[STORAGE_KEY].scale || 1;
         isCollapsed = result[STORAGE_KEY].isCollapsed || false;
       }
-      sliderEl.value = maxLines;
-      sliderValueEl.textContent = maxLines;
+      sliderEl.value = maxHeight;
+      sliderValueEl.textContent = formatPixels(maxHeight);
+      scaleSliderEl.value = scale;
+      scaleValueEl.textContent = scale + 'x';
       updateToggleButton();
     } catch (e) {}
   }
@@ -82,7 +101,7 @@
   async function saveSettings() {
     try {
       await chrome.storage.local.set({
-        [STORAGE_KEY]: { maxLines, isCollapsed }
+        [STORAGE_KEY]: { maxHeight, scale, isCollapsed }
       });
     } catch (e) {}
   }
@@ -114,13 +133,18 @@
 
   function updateStatus(response) {
     if (response && response.success) {
-      const { total, hidden, visible } = response;
+      const { totalHeight, hiddenHeight, visibleHeight } = response;
+      // Also support old format
+      const total = totalHeight || response.total || 0;
+      const visible = visibleHeight || response.visible || total;
+      const hidden = hiddenHeight || response.hidden || 0;
+
       if (hidden > 0) {
-        statusEl.textContent = `~${visible} of ${total} lines visible`;
+        statusEl.textContent = `${formatPixels(visible)}px / ${formatPixels(total)}px visible`;
       } else if (isCollapsed) {
-        statusEl.textContent = `~${total} lines (all visible)`;
+        statusEl.textContent = `${formatPixels(total)}px (all visible)`;
       } else {
-        statusEl.textContent = `~${total} lines`;
+        statusEl.textContent = `${formatPixels(total)}px total`;
       }
       statusEl.classList.remove('not-claude');
     } else {
@@ -129,7 +153,9 @@
   }
 
   async function applyCollapse() {
-    const response = await sendMessage('collapse', { maxLines, isCollapsed });
+    // Apply scale factor to maxHeight
+    const effectiveHeight = Math.round(maxHeight * scale);
+    const response = await sendMessage('collapse', { maxHeight: effectiveHeight, isCollapsed });
     updateStatus(response);
   }
 
@@ -144,6 +170,7 @@
       statusEl.textContent = 'Open claude.ai to use';
       statusEl.classList.add('not-claude');
       sliderEl.disabled = true;
+      scaleSliderEl.disabled = true;
       toggleBtn.disabled = true;
       refreshBtn.disabled = true;
       return;
@@ -160,13 +187,24 @@
   themeDarkBtn.addEventListener('click', () => saveTheme('dark'));
   themeAutoBtn.addEventListener('click', () => saveTheme('auto'));
 
-  // Slider
+  // Height slider
   sliderEl.addEventListener('input', (e) => {
-    maxLines = parseInt(e.target.value);
-    sliderValueEl.textContent = maxLines;
+    maxHeight = parseInt(e.target.value);
+    sliderValueEl.textContent = formatPixels(maxHeight);
   });
 
   sliderEl.addEventListener('change', async () => {
+    await saveSettings();
+    await applyCollapse();
+  });
+
+  // Scale slider
+  scaleSliderEl.addEventListener('input', (e) => {
+    scale = parseFloat(e.target.value);
+    scaleValueEl.textContent = scale + 'x';
+  });
+
+  scaleSliderEl.addEventListener('change', async () => {
     await saveSettings();
     await applyCollapse();
   });
@@ -188,7 +226,7 @@
   debugBtn.addEventListener('click', async () => {
     const response = await sendMessage('debug');
     if (response?.success) {
-      statusEl.textContent = `Found ${response.found} content blocks`;
+      statusEl.textContent = `Found ${response.found} blocks, ${formatPixels(response.scrollHeight)}px`;
     }
   });
 

@@ -1,12 +1,11 @@
-// Claude Leash - Content Script (Simplified)
-// Crops conversation by visual height (lines) to keep page responsive
+// Claude Leash - Content Script
+// Crops conversation by pixel height to keep page responsive
 (function() {
   'use strict';
 
   const STORAGE_KEY = 'claudeCollapseSettings';
-  const LINE_HEIGHT = 24; // Approximate line height in pixels
 
-  let currentSettings = { maxLines: 500, isCollapsed: false };
+  let currentSettings = { maxHeight: 12000, isCollapsed: false }; // Default ~500 lines at 24px
   let lastUrl = location.href;
   let isApplying = false;
 
@@ -15,39 +14,89 @@
     try {
       const result = await chrome.storage.local.get(STORAGE_KEY);
       if (result[STORAGE_KEY]) {
-        currentSettings.maxLines = result[STORAGE_KEY].maxLines || 500;
+        // Support both old (maxLines) and new (maxHeight) settings
+        if (result[STORAGE_KEY].maxHeight) {
+          currentSettings.maxHeight = result[STORAGE_KEY].maxHeight;
+        } else if (result[STORAGE_KEY].maxLines) {
+          currentSettings.maxHeight = result[STORAGE_KEY].maxLines * 24; // Convert
+        }
         currentSettings.isCollapsed = result[STORAGE_KEY].isCollapsed || false;
       }
     } catch (e) {}
   }
 
-  // Find the main scroll container
+  // Find the main scroll container - look for the one with the most scrollable content
   function getScrollContainer() {
-    const containers = document.querySelectorAll('[class*="overflow-y-auto"]');
-    for (const container of containers) {
-      const rect = container.getBoundingClientRect();
-      // Main content area: wide enough and tall enough, not on the left edge (sidebar)
-      if (rect.height > 200 && rect.width > 400 && rect.left > 200) {
-        return container;
-      }
-    }
-    // Fallback: largest scroll container
+    const containers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"]');
     let best = null;
-    let bestArea = 0;
+    let bestScrollHeight = 0;
+
     for (const container of containers) {
       const rect = container.getBoundingClientRect();
-      const area = rect.width * rect.height;
-      if (area > bestArea && rect.width > 300) {
+      // Skip tiny containers
+      if (rect.width < 200 || rect.height < 100) continue;
+
+      // Skip left sidebar (typically narrow and on the left)
+      if (rect.left < 100 && rect.width < 350) continue;
+
+      // Prefer container with most scrollable content
+      if (container.scrollHeight > bestScrollHeight) {
         best = container;
-        bestArea = area;
+        bestScrollHeight = container.scrollHeight;
       }
     }
+
+    console.log('Claude Leash: Found container with scrollHeight', bestScrollHeight);
     return best;
   }
 
-  // Get the total scrollable height of content
-  function getTotalContentHeight(container) {
-    return container ? container.scrollHeight : 0;
+  // Find hideable content elements within the container
+  function findContentElements(container) {
+    if (!container) return [];
+
+    // Try multiple strategies to find message-like elements
+    let elements = [];
+
+    // Strategy 1: Look for elements with data-testid (Claude uses these)
+    elements = [...container.querySelectorAll('[data-testid]')].filter(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.height > 50 && rect.width > 200;
+    });
+
+    if (elements.length > 5) {
+      console.log('Claude Leash: Found', elements.length, 'elements via data-testid');
+      return elements;
+    }
+
+    // Strategy 2: Walk down to find the level with most direct children
+    let current = container;
+    let bestLevel = [];
+
+    for (let depth = 0; depth < 10; depth++) {
+      const children = [...current.children].filter(c => {
+        if (c.tagName !== 'DIV') return false;
+        const rect = c.getBoundingClientRect();
+        return rect.height > 30 && rect.width > 200;
+      });
+
+      if (children.length > bestLevel.length) {
+        bestLevel = children;
+      }
+
+      // Go into the largest child
+      const next = [...current.children]
+        .filter(c => c.tagName === 'DIV')
+        .sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
+
+      if (next && next.scrollHeight > 200) {
+        current = next;
+      } else {
+        break;
+      }
+    }
+
+    console.log('Claude Leash: Found', bestLevel.length, 'elements via tree walk');
+    return bestLevel;
   }
 
   // Refresh scrollbar after DOM changes
@@ -61,23 +110,18 @@
     }
   }
 
-  // Apply the collapse - hide content above the line limit using CSS clip
-  function applyCollapse(maxLines, isCollapsed) {
+  // Apply the collapse - hide content above the pixel limit
+  function applyCollapse(maxHeight, isCollapsed) {
     if (isApplying) return { success: true };
     isApplying = true;
 
-    currentSettings = { maxLines, isCollapsed };
-    const maxHeight = maxLines * LINE_HEIGHT;
+    currentSettings = { maxHeight, isCollapsed };
 
     const container = getScrollContainer();
     if (!container) {
       isApplying = false;
       return { success: false, error: 'No scroll container found' };
     }
-
-    // Remove any previous leash styling
-    const existingStyle = document.getElementById('claude-leash-style');
-    if (existingStyle) existingStyle.remove();
 
     // Unhide any previously hidden elements
     if (window.claudeLeashHidden) {
@@ -87,65 +131,64 @@
       window.claudeLeashHidden = [];
     }
 
-    const totalHeight = getTotalContentHeight(container);
-    const totalLines = Math.round(totalHeight / LINE_HEIGHT);
-    let hiddenLines = 0;
+    const totalHeight = container.scrollHeight;
+    let hiddenHeight = 0;
 
     if (isCollapsed && totalHeight > maxHeight) {
-      // Find all direct children of the scroll container's content wrapper
-      // We need to go one level deep to find the actual message containers
-      const contentWrapper = container.firstElementChild;
-      if (contentWrapper) {
-        // Get all substantial child elements
-        const children = [...contentWrapper.querySelectorAll(':scope > div')].filter(el => {
-          const rect = el.getBoundingClientRect();
-          return rect.height > 10;
-        });
+      const elements = findContentElements(container);
 
-        if (children.length > 0) {
-          // Calculate cumulative heights from bottom
-          let heightFromBottom = 0;
-          const hiddenElements = [];
+      if (elements.length > 0) {
+        // Calculate cumulative heights from bottom
+        let heightFromBottom = 0;
+        const hiddenElements = [];
 
-          for (let i = children.length - 1; i >= 0; i--) {
-            const el = children[i];
-            const rect = el.getBoundingClientRect();
-            heightFromBottom += rect.height;
+        // First pass: measure all heights
+        const heights = elements.map(el => el.getBoundingClientRect().height);
 
-            if (heightFromBottom > maxHeight) {
-              // This element and all before it should be hidden
-              for (let j = 0; j <= i; j++) {
-                hiddenElements.push(children[j]);
-              }
-              break;
+        for (let i = elements.length - 1; i >= 0; i--) {
+          heightFromBottom += heights[i];
+
+          if (heightFromBottom > maxHeight) {
+            // This element and all before it should be hidden
+            for (let j = 0; j <= i; j++) {
+              hiddenElements.push(elements[j]);
+              hiddenHeight += heights[j];
             }
+            break;
           }
-
-          // Hide elements
-          hiddenElements.forEach(el => {
-            el.style.setProperty('display', 'none', 'important');
-          });
-          window.claudeLeashHidden = hiddenElements;
-          hiddenLines = Math.round(hiddenElements.reduce((sum, el) => {
-            // Get original height before hiding (it's already hidden, so we estimate)
-            return sum + 200; // Rough estimate per hidden block
-          }, 0) / LINE_HEIGHT);
         }
+
+        // Hide elements
+        hiddenElements.forEach(el => {
+          el.style.setProperty('display', 'none', 'important');
+        });
+        window.claudeLeashHidden = hiddenElements;
       }
     }
 
     // Refresh scrollbar
     setTimeout(() => refreshScrollbar(container), 100);
 
+    // Calculate visible height
+    const visibleHeight = Math.max(0, totalHeight - hiddenHeight);
+
     // Update badge
-    const visibleLines = Math.max(0, totalLines - hiddenLines);
     setTimeout(() => {
-      updateBadge(visibleLines, totalLines, isCollapsed);
+      updateBadge(visibleHeight, totalHeight, isCollapsed);
       isApplying = false;
     }, 150);
 
-    console.log(`Claude Leash: ${isCollapsed ? 'Collapsed' : 'Expanded'} - ${visibleLines}/${totalLines} lines visible`);
-    return { success: true, total: totalLines, hidden: hiddenLines, visible: visibleLines };
+    console.log(`Claude Leash: ${isCollapsed ? 'Collapsed' : 'Expanded'} - ${Math.round(visibleHeight/1000)}k/${Math.round(totalHeight/1000)}k px visible`);
+    return {
+      success: true,
+      totalHeight,
+      hiddenHeight,
+      visibleHeight,
+      // For backwards compatibility with popup
+      total: totalHeight,
+      hidden: hiddenHeight,
+      visible: visibleHeight
+    };
   }
 
   // Update extension badge
@@ -169,7 +212,7 @@
         [500, 1500, 3000].forEach(delay => {
           setTimeout(() => {
             if (currentSettings.isCollapsed) {
-              applyCollapse(currentSettings.maxLines, true);
+              applyCollapse(currentSettings.maxHeight, true);
             }
           }, delay);
         });
@@ -185,7 +228,7 @@
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         if (currentSettings.isCollapsed) {
-          applyCollapse(currentSettings.maxLines, true);
+          applyCollapse(currentSettings.maxHeight, true);
         }
       }, 800);
     });
@@ -198,15 +241,16 @@
     try {
       switch (message.action) {
         case 'collapse':
-          const result = applyCollapse(message.maxLines, message.isCollapsed);
+          // Support both maxHeight (new) and maxLines (old)
+          const height = message.maxHeight || (message.maxLines * 24);
+          const result = applyCollapse(height, message.isCollapsed);
           sendResponse(result);
           break;
 
         case 'getStatus':
           const container = getScrollContainer();
-          const totalHeight = getTotalContentHeight(container);
-          const totalLines = Math.round(totalHeight / LINE_HEIGHT);
-          sendResponse({ success: true, total: totalLines });
+          const totalHeight = container ? container.scrollHeight : 0;
+          sendResponse({ success: true, total: totalHeight, totalHeight });
           break;
 
         case 'debug':
@@ -214,20 +258,19 @@
           const cont = getScrollContainer();
           if (cont) {
             cont.style.outline = '3px solid red';
-            const wrapper = cont.firstElementChild;
-            if (wrapper) {
-              const children = [...wrapper.querySelectorAll(':scope > div')];
-              children.forEach((el, i) => {
-                el.style.outline = `2px solid ${i % 2 === 0 ? 'blue' : 'green'}`;
-              });
-              setTimeout(() => {
-                cont.style.outline = '';
-                children.forEach(el => el.style.outline = '');
-              }, 3000);
-              sendResponse({ success: true, found: children.length });
-            } else {
-              sendResponse({ success: true, found: 0 });
-            }
+            const elements = findContentElements(cont);
+            elements.forEach((el, i) => {
+              el.style.outline = `2px solid ${i % 2 === 0 ? 'blue' : 'green'}`;
+            });
+            setTimeout(() => {
+              cont.style.outline = '';
+              elements.forEach(el => el.style.outline = '');
+            }, 3000);
+            sendResponse({
+              success: true,
+              found: elements.length,
+              scrollHeight: cont.scrollHeight
+            });
           } else {
             sendResponse({ success: false, error: 'No container found' });
           }
@@ -251,9 +294,8 @@
     // Initial badge update
     setTimeout(() => {
       const container = getScrollContainer();
-      const totalHeight = getTotalContentHeight(container);
-      const totalLines = Math.round(totalHeight / LINE_HEIGHT);
-      updateBadge(totalLines, totalLines, currentSettings.isCollapsed);
+      const totalHeight = container ? container.scrollHeight : 0;
+      updateBadge(totalHeight, totalHeight, currentSettings.isCollapsed);
     }, 1000);
   }
 

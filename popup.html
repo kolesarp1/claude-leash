@@ -316,10 +316,18 @@
   <div class="status" id="status">Checking...</div>
 
   <div class="control-group">
-    <label class="control-label">Keep visible (lines)</label>
+    <label class="control-label">Keep visible (pixels)</label>
     <div class="slider-row">
-      <input type="range" id="slider" min="50" max="2000" step="50" value="500">
-      <span class="slider-value" id="sliderValue">500</span>
+      <input type="range" id="slider" min="2000" max="100000" step="1000" value="12000">
+      <span class="slider-value" id="sliderValue">12k</span>
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label">UI Scale (for HiDPI)</label>
+    <div class="slider-row">
+      <input type="range" id="scaleSlider" min="1" max="3" step="0.5" value="1">
+      <span class="slider-value" id="scaleValue">1x</span>
     </div>
   </div>
 
