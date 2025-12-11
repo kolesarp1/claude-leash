@@ -8,12 +8,20 @@
   let currentTab = null;
   let isCollapsed = false;
   let keepVisible = 8;
+  let cropMode = 'messages'; // 'messages' or 'lines'
+  let maxLines = 500;
   let currentTheme = 'light';
 
   // Elements
   const statusEl = document.getElementById('status');
   const sliderEl = document.getElementById('slider');
   const sliderValueEl = document.getElementById('sliderValue');
+  const linesSliderEl = document.getElementById('linesSlider');
+  const linesSliderValueEl = document.getElementById('linesSliderValue');
+  const messagesControlEl = document.getElementById('messagesControl');
+  const linesControlEl = document.getElementById('linesControl');
+  const modeMessagesBtnEl = document.getElementById('modeMessagesBtn');
+  const modeLinesBtnEl = document.getElementById('modeLinesBtn');
   const toggleBtn = document.getElementById('toggleBtn');
   const toggleIcon = document.getElementById('toggleIcon');
   const toggleText = document.getElementById('toggleText');
@@ -78,9 +86,14 @@
       if (result[STORAGE_KEY]) {
         keepVisible = result[STORAGE_KEY].keepVisible || 8;
         isCollapsed = result[STORAGE_KEY].isCollapsed || false;
+        cropMode = result[STORAGE_KEY].cropMode || 'messages';
+        maxLines = result[STORAGE_KEY].maxLines || 500;
       }
       sliderEl.value = keepVisible;
       sliderValueEl.textContent = keepVisible;
+      linesSliderEl.value = maxLines;
+      linesSliderValueEl.textContent = maxLines;
+      updateModeUI();
       updateToggleButton();
     } catch (e) {
       console.error('Failed to load settings:', e);
@@ -90,10 +103,24 @@
   async function saveSettings() {
     try {
       await chrome.storage.local.set({
-        [STORAGE_KEY]: { keepVisible, isCollapsed }
+        [STORAGE_KEY]: { keepVisible, isCollapsed, cropMode, maxLines }
       });
     } catch (e) {
       console.error('Failed to save settings:', e);
+    }
+  }
+
+  function updateModeUI() {
+    if (cropMode === 'messages') {
+      modeMessagesBtnEl.classList.add('active');
+      modeLinesBtnEl.classList.remove('active');
+      messagesControlEl.classList.remove('hidden');
+      linesControlEl.classList.add('hidden');
+    } else {
+      modeMessagesBtnEl.classList.remove('active');
+      modeLinesBtnEl.classList.add('active');
+      messagesControlEl.classList.add('hidden');
+      linesControlEl.classList.remove('hidden');
     }
   }
 
@@ -131,7 +158,11 @@
     if (response && response.success) {
       const { total, hidden } = response;
       if (hidden > 0) {
-        statusEl.textContent = `${hidden} of ${total} messages hidden`;
+        if (cropMode === 'lines') {
+          statusEl.textContent = `${hidden} of ${total} msg hidden (by lines)`;
+        } else {
+          statusEl.textContent = `${hidden} of ${total} messages hidden`;
+        }
       } else if (isCollapsed) {
         statusEl.textContent = `${total} messages (all visible)`;
       } else {
@@ -146,7 +177,9 @@
   async function applyCollapse() {
     const response = await sendMessage('collapse', {
       keepVisible,
-      isCollapsed
+      isCollapsed,
+      cropMode,
+      maxLines
     });
     updateStatus(response);
   }
@@ -176,19 +209,45 @@
   }
 
   // ============ Event listeners ============
-  
+
   // Theme buttons
   themeLightBtn.addEventListener('click', () => saveTheme('light'));
   themeDarkBtn.addEventListener('click', () => saveTheme('dark'));
   themeAutoBtn.addEventListener('click', () => saveTheme('auto'));
-  
-  // Slider
+
+  // Mode buttons
+  modeMessagesBtnEl.addEventListener('click', async () => {
+    cropMode = 'messages';
+    updateModeUI();
+    await saveSettings();
+    await applyCollapse();
+  });
+
+  modeLinesBtnEl.addEventListener('click', async () => {
+    cropMode = 'lines';
+    updateModeUI();
+    await saveSettings();
+    await applyCollapse();
+  });
+
+  // Messages slider
   sliderEl.addEventListener('input', (e) => {
     keepVisible = parseInt(e.target.value);
     sliderValueEl.textContent = keepVisible;
   });
 
   sliderEl.addEventListener('change', async () => {
+    await saveSettings();
+    await applyCollapse();
+  });
+
+  // Lines slider
+  linesSliderEl.addEventListener('input', (e) => {
+    maxLines = parseInt(e.target.value);
+    linesSliderValueEl.textContent = maxLines;
+  });
+
+  linesSliderEl.addEventListener('change', async () => {
     await saveSettings();
     await applyCollapse();
   });

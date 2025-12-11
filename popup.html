@@ -324,6 +324,56 @@
       font-weight: 500;
       transition: all 0.2s;
     }
+
+    /* Mode switcher */
+    .mode-switcher {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 12px;
+    }
+
+    .mode-btn {
+      flex: 1;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    body.light .mode-btn {
+      background: #f3f4f6;
+      color: #6b7280;
+    }
+
+    body.light .mode-btn:hover {
+      background: #e5e7eb;
+    }
+
+    body.light .mode-btn.active {
+      background: #8b5cf6;
+      color: #fff;
+    }
+
+    body.dark .mode-btn {
+      background: #333;
+      color: #999;
+    }
+
+    body.dark .mode-btn:hover {
+      background: #444;
+    }
+
+    body.dark .mode-btn.active {
+      background: #8b5cf6;
+      color: #fff;
+    }
+
+    .control-group.hidden {
+      display: none;
+    }
   </style>
 </head>
 <body class="light">
@@ -333,12 +383,28 @@
   </div>
   
   <div class="status" id="status">Checking...</div>
-  
+
   <div class="control-group">
+    <label class="control-label">Crop mode</label>
+    <div class="mode-switcher">
+      <button class="mode-btn active" id="modeMessagesBtn">Messages</button>
+      <button class="mode-btn" id="modeLinesBtn">Lines</button>
+    </div>
+  </div>
+
+  <div class="control-group" id="messagesControl">
     <label class="control-label">Keep visible messages</label>
     <div class="slider-row">
       <input type="range" id="slider" min="2" max="30" value="8">
       <span class="slider-value" id="sliderValue">8</span>
+    </div>
+  </div>
+
+  <div class="control-group hidden" id="linesControl">
+    <label class="control-label">Keep visible lines</label>
+    <div class="slider-row">
+      <input type="range" id="linesSlider" min="50" max="2000" step="50" value="500">
+      <span class="slider-value" id="linesSliderValue">500</span>
     </div>
   </div>
   

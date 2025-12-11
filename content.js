@@ -4,17 +4,34 @@
   'use strict';
 
   const STORAGE_KEY = 'claudeCollapseSettings';
-  let currentSettings = { keepVisible: 8, isCollapsed: false };
+  let currentSettings = { keepVisible: 8, isCollapsed: false, cropMode: 'messages', maxLines: 500 };
   let lastUrl = location.href;
   let cachedMessages = []; // Cache found messages to track total even when hidden
   let originalTotal = 0; // Track original count before hiding
+
+  // Count approximate lines in an element based on text content
+  function countLines(element) {
+    const text = element.innerText || '';
+    // Count actual newlines
+    const newlines = (text.match(/\n/g) || []).length;
+    // Estimate additional wrapping lines based on text length and avg chars per line (~80 chars)
+    const avgCharsPerLine = 80;
+    const estimatedWrapLines = Math.floor(text.length / avgCharsPerLine);
+    // Use the higher estimate - either newlines or wrapped text
+    return Math.max(newlines + 1, estimatedWrapLines);
+  }
 
   // Load settings from storage
   async function loadSettings() {
     try {
       const result = await chrome.storage.local.get(STORAGE_KEY);
       if (result[STORAGE_KEY]) {
-        currentSettings = result[STORAGE_KEY];
+        currentSettings = {
+          keepVisible: result[STORAGE_KEY].keepVisible || 8,
+          isCollapsed: result[STORAGE_KEY].isCollapsed || false,
+          cropMode: result[STORAGE_KEY].cropMode || 'messages',
+          maxLines: result[STORAGE_KEY].maxLines || 500
+        };
       }
     } catch (e) {}
   }
@@ -205,8 +222,8 @@
   }
 
   // Apply collapse/expand
-  function applyCollapse(keepVisible, isCollapsed) {
-    currentSettings = { keepVisible, isCollapsed };
+  function applyCollapse(keepVisible, isCollapsed, cropMode = 'messages', maxLines = 500) {
+    currentSettings = { keepVisible, isCollapsed, cropMode, maxLines };
 
     // First, unhide everything
     if (window.claudeLeashAllElements) {
@@ -220,54 +237,99 @@
     originalTotal = messages.length;
 
     const total = messages.length; // Number of user messages
-    const hideCount = Math.max(0, total - keepVisible);
     let actuallyHidden = 0;
+    let hideCount = 0;
 
-    console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} - total: ${total}, keep: ${keepVisible}, will hide: ${isCollapsed ? hideCount : 0}`);
+    if (cropMode === 'lines') {
+      // Line-based cropping
+      console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} by LINES - total messages: ${total}, maxLines: ${maxLines}`);
 
-    if (isCollapsed && hideCount > 0 && window.claudeLeashUserMessages && window.claudeLeashAllElements) {
-      // Find the cutoff user message (the last one we want to hide)
-      const cutoffUserMsg = window.claudeLeashUserMessages[hideCount - 1];
-      if (cutoffUserMsg) {
-        // Find which element in allElements contains or comes after the cutoff
-        // Use DOM order, not visual positions (which change with scroll)
+      if (isCollapsed && window.claudeLeashAllElements && window.claudeLeashAllElements.length > 0) {
         const allElements = window.claudeLeashAllElements;
 
-        // Find the index of the element containing the cutoff user message
-        let cutoffIndex = -1;
-        for (let i = 0; i < allElements.length; i++) {
-          if (allElements[i].contains(cutoffUserMsg)) {
+        // Count lines from the bottom up
+        let totalLinesFromBottom = 0;
+        let cutoffIndex = allElements.length; // Start assuming nothing is hidden
+
+        // Go backwards through elements, counting lines
+        for (let i = allElements.length - 1; i >= 0; i--) {
+          const elementLines = countLines(allElements[i]);
+          totalLinesFromBottom += elementLines;
+
+          if (totalLinesFromBottom > maxLines) {
+            // We've exceeded max lines, this element and everything before it should be hidden
             cutoffIndex = i;
             break;
           }
         }
 
-        // If not found directly, find elements that come before the first visible user message
-        if (cutoffIndex === -1) {
-          const firstVisibleUserMsg = window.claudeLeashUserMessages[hideCount];
-          if (firstVisibleUserMsg) {
-            for (let i = 0; i < allElements.length; i++) {
-              if (allElements[i].contains(firstVisibleUserMsg)) {
-                cutoffIndex = i - 1; // Hide everything before this
-                break;
-              }
-            }
-          }
-        }
-
         // Hide all elements up to and including the cutoff index
-        if (cutoffIndex >= 0) {
+        if (cutoffIndex < allElements.length) {
           for (let i = 0; i <= cutoffIndex; i++) {
             allElements[i].style.setProperty('display', 'none', 'important');
             actuallyHidden++;
           }
         }
 
-        console.log(`Claude Leash: Cutoff at element index ${cutoffIndex}, hiding ${actuallyHidden} of ${allElements.length}`);
+        // Count hidden user messages for reporting
+        if (window.claudeLeashUserMessages) {
+          hideCount = window.claudeLeashUserMessages.filter(msg =>
+            msg.closest && allElements.slice(0, cutoffIndex + 1).some(el => el.contains(msg))
+          ).length;
+        }
+
+        console.log(`Claude Leash (lines): Cutoff at element index ${cutoffIndex}, hiding ${actuallyHidden} of ${allElements.length} elements (~${totalLinesFromBottom} lines visible)`);
+      }
+    } else {
+      // Message-based cropping (original behavior)
+      hideCount = Math.max(0, total - keepVisible);
+
+      console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} - total: ${total}, keep: ${keepVisible}, will hide: ${isCollapsed ? hideCount : 0}`);
+
+      if (isCollapsed && hideCount > 0 && window.claudeLeashUserMessages && window.claudeLeashAllElements) {
+        // Find the cutoff user message (the last one we want to hide)
+        const cutoffUserMsg = window.claudeLeashUserMessages[hideCount - 1];
+        if (cutoffUserMsg) {
+          // Find which element in allElements contains or comes after the cutoff
+          // Use DOM order, not visual positions (which change with scroll)
+          const allElements = window.claudeLeashAllElements;
+
+          // Find the index of the element containing the cutoff user message
+          let cutoffIndex = -1;
+          for (let i = 0; i < allElements.length; i++) {
+            if (allElements[i].contains(cutoffUserMsg)) {
+              cutoffIndex = i;
+              break;
+            }
+          }
+
+          // If not found directly, find elements that come before the first visible user message
+          if (cutoffIndex === -1) {
+            const firstVisibleUserMsg = window.claudeLeashUserMessages[hideCount];
+            if (firstVisibleUserMsg) {
+              for (let i = 0; i < allElements.length; i++) {
+                if (allElements[i].contains(firstVisibleUserMsg)) {
+                  cutoffIndex = i - 1; // Hide everything before this
+                  break;
+                }
+              }
+            }
+          }
+
+          // Hide all elements up to and including the cutoff index
+          if (cutoffIndex >= 0) {
+            for (let i = 0; i <= cutoffIndex; i++) {
+              allElements[i].style.setProperty('display', 'none', 'important');
+              actuallyHidden++;
+            }
+          }
+
+          console.log(`Claude Leash: Cutoff at element index ${cutoffIndex}, hiding ${actuallyHidden} of ${allElements.length}`);
+        }
       }
     }
 
-    console.log(`Claude Leash: Applied - ${actuallyHidden} elements hidden, keeping ${keepVisible} messages`);
+    console.log(`Claude Leash: Applied - ${actuallyHidden} elements hidden, mode: ${cropMode}`);
 
     // Refresh scrollbar after DOM changes
     setTimeout(refreshScrollbar, 100);
@@ -313,7 +375,7 @@
         retryDelays.forEach(delay => {
           setTimeout(() => {
             if (currentSettings.isCollapsed) {
-              applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
+              applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed, currentSettings.cropMode, currentSettings.maxLines);
             } else {
               reportStatus();
             }
@@ -329,7 +391,7 @@
       clearTimeout(window.cccMutationDebounce);
       window.cccMutationDebounce = setTimeout(() => {
         if (currentSettings.isCollapsed) {
-          applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
+          applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed, currentSettings.cropMode, currentSettings.maxLines);
         } else {
           reportStatus();
         }
@@ -351,7 +413,7 @@
       const messages = findMessages();
       if (messages.length > 0 && messages.length !== originalTotal) {
         console.log('Claude Leash: Detected content change, reapplying...');
-        applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
+        applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed, currentSettings.cropMode, currentSettings.maxLines);
       }
     }, 2000);
   }
@@ -361,7 +423,7 @@
     try {
       switch (message.action) {
         case 'collapse':
-          const result = applyCollapse(message.keepVisible, message.isCollapsed);
+          const result = applyCollapse(message.keepVisible, message.isCollapsed, message.cropMode, message.maxLines);
           sendResponse(result);
           break;
           
