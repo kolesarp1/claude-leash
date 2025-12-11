@@ -54,76 +54,55 @@
     
     if (isClaudeCode()) {
       // === Claude Code Web ===
-      // Similar approach to Claude.ai: find user prompts, count them, hide by position
+      // Find conversation container and get all message elements
 
-      // Try multiple selectors for user messages in Claude Code Web
-      let userPrompts = [];
+      // Find the main conversation container
+      const scrollContainers = document.querySelectorAll('[class*="overflow-y-auto"]');
+      let bestContainer = null;
+      let bestMessages = [];
 
-      // Look for elements that contain user prompts (human icon or specific structure)
-      // Claude Code Web uses different class names
-      const possibleUserPrompts = document.querySelectorAll('[data-testid*="human"], [data-testid*="user"], [class*="human"], [class*="user-message"]');
-      if (possibleUserPrompts.length > 0) {
-        userPrompts = [...possibleUserPrompts];
-        console.log('Claude Code: Found', userPrompts.length, 'user prompts by selector');
-      }
+      for (const container of scrollContainers) {
+        const rect = container.getBoundingClientRect();
+        // Main conversation should be large and in the center/right
+        if (rect.width < 300 || rect.height < 200) continue;
 
-      // Fallback: look for the conversation structure
-      if (userPrompts.length === 0) {
-        // Find the main conversation container
-        const scrollContainers = document.querySelectorAll('[class*="overflow-y-auto"]');
+        // Find the message list level by drilling down
+        let messageList = container;
+        for (let depth = 0; depth < 10; depth++) {
+          const children = [...messageList.children].filter(c => c.tagName === 'DIV');
 
-        for (const container of scrollContainers) {
-          const rect = container.getBoundingClientRect();
-          if (rect.width < 300 || rect.height < 200 || rect.left < 100) continue;
+          // Check if this level has multiple substantial children (messages)
+          const substantial = children.filter(c => {
+            const text = c.innerText || '';
+            const childRect = c.getBoundingClientRect();
+            return text.length > 30 && childRect.height > 50;
+          });
 
-          // Find the message list level
-          let messageList = container;
-          for (let depth = 0; depth < 10; depth++) {
-            const children = [...messageList.children].filter(c => c.tagName === 'DIV');
-            if (children.length > 3) {
-              // Found the level with messages
-              // Filter to substantial children
-              const substantial = children.filter(c => {
-                const text = c.innerText || '';
-                return text.length > 20;
-              });
-              if (substantial.length > 0) {
-                messages = substantial;
-                window.claudeLeashAllElements = substantial;
-                console.log('Claude Code: Found', messages.length, 'messages at depth', depth);
-                break;
-              }
-            }
-            const firstChild = children.find(c => c.getBoundingClientRect().height > 100);
-            if (firstChild) {
-              messageList = firstChild;
-            } else {
-              break;
-            }
+          if (substantial.length > bestMessages.length) {
+            bestMessages = substantial;
+            bestContainer = messageList;
+            console.log('Claude Code: Found', substantial.length, 'messages at depth', depth, 'in container width', Math.round(rect.width));
           }
-          if (messages.length > 0) break;
+
+          // Go deeper
+          const firstChild = children.find(c => {
+            const childRect = c.getBoundingClientRect();
+            return childRect.height > 100;
+          });
+          if (firstChild) {
+            messageList = firstChild;
+          } else {
+            break;
+          }
         }
       }
 
-      // If we found user prompts, use them for counting
-      if (userPrompts.length > 0) {
-        messages = userPrompts;
-        // Also find the container to hide elements
-        if (userPrompts[0]) {
-          let container = userPrompts[0];
-          for (let i = 0; i < 10; i++) {
-            const parent = container.parentElement;
-            if (!parent) break;
-            const siblings = [...parent.children].filter(c => c.tagName === 'DIV' && c.innerText?.length > 20);
-            if (siblings.length > 3) {
-              window.claudeLeashAllElements = siblings;
-              window.claudeLeashUserMessages = userPrompts;
-              console.log('Claude Code: Found', siblings.length, 'hideable elements');
-              break;
-            }
-            container = parent;
-          }
-        }
+      if (bestMessages.length > 0) {
+        messages = bestMessages;
+        window.claudeLeashAllElements = bestMessages;
+        // For Claude Code, messages ARE the user messages for now (no separate tracking)
+        window.claudeLeashUserMessages = bestMessages;
+        console.log('Claude Code: Using', bestMessages.length, 'messages for hiding');
       }
     } else {
       // === Regular Claude.ai ===
