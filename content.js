@@ -222,19 +222,44 @@
     console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} - total: ${total}, keep: ${keepVisible}, will hide: ${isCollapsed ? hideCount : 0}`);
 
     if (isCollapsed && hideCount > 0 && window.claudeLeashUserMessages && window.claudeLeashAllElements) {
-      // Find the cutoff point - the Nth user message from the start
+      // Find the cutoff user message (the last one we want to hide)
       const cutoffUserMsg = window.claudeLeashUserMessages[hideCount - 1];
       if (cutoffUserMsg) {
-        const cutoffY = cutoffUserMsg.getBoundingClientRect().bottom;
+        // Find which element in allElements contains or comes after the cutoff
+        // Use DOM order, not visual positions (which change with scroll)
+        const allElements = window.claudeLeashAllElements;
 
-        // Hide all elements above the cutoff point
-        window.claudeLeashAllElements.forEach(el => {
-          const rect = el.getBoundingClientRect();
-          if (rect.bottom <= cutoffY + 50) { // +50 for margin
-            el.style.setProperty('display', 'none', 'important');
+        // Find the index of the element containing the cutoff user message
+        let cutoffIndex = -1;
+        for (let i = 0; i < allElements.length; i++) {
+          if (allElements[i].contains(cutoffUserMsg)) {
+            cutoffIndex = i;
+            break;
+          }
+        }
+
+        // If not found directly, find elements that come before the first visible user message
+        if (cutoffIndex === -1) {
+          const firstVisibleUserMsg = window.claudeLeashUserMessages[hideCount];
+          if (firstVisibleUserMsg) {
+            for (let i = 0; i < allElements.length; i++) {
+              if (allElements[i].contains(firstVisibleUserMsg)) {
+                cutoffIndex = i - 1; // Hide everything before this
+                break;
+              }
+            }
+          }
+        }
+
+        // Hide all elements up to and including the cutoff index
+        if (cutoffIndex >= 0) {
+          for (let i = 0; i <= cutoffIndex; i++) {
+            allElements[i].style.setProperty('display', 'none', 'important');
             actuallyHidden++;
           }
-        });
+        }
+
+        console.log(`Claude Leash: Cutoff at element index ${cutoffIndex}, hiding ${actuallyHidden} of ${allElements.length}`);
       }
     }
 
