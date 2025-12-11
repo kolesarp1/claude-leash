@@ -184,11 +184,14 @@
 
   // Report status to background script for badge update
   function reportStatus() {
-    // If we have cached messages, use them for accurate count
-    const messages = cachedMessages.length > 0 ? cachedMessages : findMessages();
-    const hidden = messages.filter(m => m.style.display === 'none').length;
-    const total = originalTotal > 0 ? originalTotal : messages.length;
-    const visible = total - hidden;
+    const total = originalTotal > 0 ? originalTotal : (cachedMessages.length || findMessages().length);
+
+    // Calculate visible based on settings
+    let visible = total;
+    if (currentSettings.isCollapsed) {
+      visible = Math.min(currentSettings.keepVisible, total);
+    }
+    const hidden = total - visible;
 
     chrome.runtime.sendMessage({
       action: 'updateBadge',

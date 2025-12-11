@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Claude Leash",
   "description": "Keep your Claude context on a leash - hide old messages on Claude.ai and Claude Code to boost performance!",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "background": {
     "service_worker": "background.js"
