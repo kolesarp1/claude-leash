@@ -114,13 +114,13 @@
 
   function updateStatus(response) {
     if (response && response.success) {
-      const { total, hidden } = response;
+      const { total, hidden, visible } = response;
       if (hidden > 0) {
-        statusEl.textContent = `${hidden} of ${total} blocks hidden`;
+        statusEl.textContent = `~${visible} of ${total} lines visible`;
       } else if (isCollapsed) {
-        statusEl.textContent = `${total} blocks (all visible)`;
+        statusEl.textContent = `~${total} lines (all visible)`;
       } else {
-        statusEl.textContent = `${total} blocks`;
+        statusEl.textContent = `~${total} lines`;
       }
       statusEl.classList.remove('not-claude');
     } else {
@@ -188,7 +188,7 @@
   debugBtn.addEventListener('click', async () => {
     const response = await sendMessage('debug');
     if (response?.success) {
-      statusEl.textContent = `Found ${response.found} blocks`;
+      statusEl.textContent = `Found ${response.found} content blocks`;
     }
   });
 
