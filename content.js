@@ -107,53 +107,85 @@
       }
     } else {
       // === Regular Claude.ai ===
-      // Strategy: Find TURN containers (user message + Claude response = 1 turn)
-      // This gives intuitive counting: "keep last 4 turns" = last 4 Q&A exchanges
+      // Strategy: Find the conversation container, then get its direct children as messages
+      // Each child should be a full turn (user message + Claude response)
 
       const userMessages = document.querySelectorAll('[class*="font-user-message"]');
-      console.log('Claude.ai: Found', userMessages.length, 'user messages (turns)');
+      console.log('Claude.ai: Found', userMessages.length, 'user messages');
 
-      // For each user message, walk up to find the TURN container
-      // The turn container should include: user message + any attachments + Claude's response
-      const turnContainers = new Set();
+      if (userMessages.length > 0) {
+        // Walk up from first user message to find the conversation list container
+        let conversationList = null;
+        let current = userMessages[0];
 
-      for (const userMsg of userMessages) {
-        let container = userMsg;
-        let lastValidContainer = userMsg;
-
-        // Walk up the DOM looking for the turn container
-        // The turn container is typically a direct child of the conversation list
-        for (let i = 0; i < 15; i++) {
-          const parent = container.parentElement;
+        for (let i = 0; i < 20; i++) {
+          const parent = current.parentElement;
           if (!parent) break;
 
-          const rect = parent.getBoundingClientRect();
-          // Stop if we hit a very wide container (main scroll area)
-          if (rect.width > 900) break;
-
-          // Check if this parent has many siblings (conversation list)
-          const siblings = [...parent.children].filter(c => {
+          // Count substantial children (potential turns)
+          const children = [...parent.children].filter(c => {
             if (c.tagName !== 'DIV') return false;
-            const r = c.getBoundingClientRect();
-            return r.height > 20; // Substantial children only
+            const rect = c.getBoundingClientRect();
+            return rect.height > 50 && rect.width > 200;
           });
 
-          if (siblings.length > 4) {
-            // This parent is the conversation list
-            // Current container is a turn container
+          // If this parent has many substantial children, it's likely the conversation list
+          if (children.length >= userMessages.length * 0.5 && children.length >= 3) {
+            conversationList = parent;
+            console.log('Claude.ai: Found conversation list with', children.length, 'children');
             break;
           }
 
-          lastValidContainer = container;
-          container = parent;
+          current = parent;
         }
 
-        // Use the container we found
-        turnContainers.add(container);
-      }
+        if (conversationList) {
+          // Get all substantial children of the conversation list
+          messages = [...conversationList.children].filter(c => {
+            if (c.tagName !== 'DIV') return false;
+            const rect = c.getBoundingClientRect();
+            // Skip small elements (spacers, etc)
+            if (rect.height < 50 || rect.width < 200) return false;
+            // Must contain either a user message or Claude response
+            const hasUserMsg = c.querySelector('[class*="font-user-message"]');
+            const hasClaudeResp = c.querySelector('[class*="font-claude-response"]');
+            return hasUserMsg || hasClaudeResp;
+          });
+          console.log('Claude.ai: Found', messages.length, 'message containers');
+        } else {
+          // Fallback: use the old method of walking up from each user message
+          console.log('Claude.ai: Fallback - walking up from each user message');
+          const turnContainers = new Set();
 
-      messages = [...turnContainers];
-      console.log('Claude.ai: Found', messages.length, 'turn containers');
+          for (const userMsg of userMessages) {
+            let container = userMsg;
+
+            for (let i = 0; i < 12; i++) {
+              const parent = container.parentElement;
+              if (!parent) break;
+
+              const rect = parent.getBoundingClientRect();
+              if (rect.width > 900) break;
+
+              // Check if this container has both user message and Claude response
+              const hasClaudeResp = parent.querySelector('[class*="font-claude-response"]');
+              if (hasClaudeResp && !container.querySelector('[class*="font-claude-response"]')) {
+                // Parent has Claude response but current container doesn't
+                // So parent is the full turn container
+                container = parent;
+                break;
+              }
+
+              container = parent;
+            }
+
+            turnContainers.add(container);
+          }
+
+          messages = [...turnContainers];
+          console.log('Claude.ai: Fallback found', messages.length, 'containers');
+        }
+      }
     }
     
     // Sort by vertical position
