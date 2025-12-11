@@ -118,7 +118,7 @@
       // Find top-level message containers
       // For user messages: walk up to find a reasonable container
       const foundContainers = new Set();
-      
+
       // Process user messages
       for (const userMsg of userMessages) {
         let container = userMsg;
@@ -126,7 +126,7 @@
         for (let i = 0; i < 8; i++) {
           const parent = container.parentElement;
           if (!parent) break;
-          
+
           const rect = parent.getBoundingClientRect();
           // Stop if we hit a very wide container (likely the main scroll area)
           if (rect.width > 900) break;
@@ -138,6 +138,26 @@
           }
           container = parent;
         }
+
+        // Check if this container has siblings with images (attachments)
+        // If so, go up one more level to include attachments
+        const containerParent = container.parentElement;
+        if (containerParent) {
+          const siblingImages = containerParent.querySelectorAll(':scope > div img, :scope > div [class*="image"], :scope > div [class*="attachment"]');
+          const parentRect = containerParent.getBoundingClientRect();
+          if (siblingImages.length > 0 && parentRect.width <= 900) {
+            // Check parent's parent to see if it's the turn list
+            const grandparent = containerParent.parentElement;
+            if (grandparent) {
+              const grandSiblings = [...grandparent.children].filter(c => c.tagName === 'DIV');
+              if (grandSiblings.length > 2) {
+                // Parent is the turn container that includes both text and attachments
+                container = containerParent;
+              }
+            }
+          }
+        }
+
         foundContainers.add(container);
       }
       
@@ -169,14 +189,40 @@
         foundContainers.add(container);
       }
       
+      // Also find standalone image containers in the conversation
+      // These may be file attachments that aren't inside text message containers
+      const allImages = document.querySelectorAll('img[src*="blob:"], img[src*="file"], img[src*="upload"], [class*="file-thumbnail"], [class*="attachment"]');
+      for (const img of allImages) {
+        // Walk up to find a reasonable container
+        let container = img;
+        for (let i = 0; i < 8; i++) {
+          const parent = container.parentElement;
+          if (!parent) break;
+
+          const rect = parent.getBoundingClientRect();
+          if (rect.width > 900) break;
+          const siblings = [...parent.children].filter(c => c.tagName === 'DIV');
+          if (siblings.length > 3) break;
+          container = parent;
+        }
+
+        // Only add if not already in foundContainers and in conversation area
+        const rect = container.getBoundingClientRect();
+        if (rect.left > 100 && rect.width > 100 && rect.height > 50) {
+          foundContainers.add(container);
+        }
+      }
+
       // Convert to array and filter out tiny/invisible elements and UI components
       messages = [...foundContainers].filter(el => {
         const rect = el.getBoundingClientRect();
         // Must have reasonable size
-        if (rect.height < 50 || rect.width < 200) return false;
+        if (rect.height < 30 || rect.width < 100) return false;
         // Skip elements that are just model selectors or other UI
         const text = el.innerText?.trim() || '';
-        if (text.length < 20) return false;
+        const hasImage = el.querySelector('img') !== null;
+        // Allow elements with images even if text is short
+        if (text.length < 20 && !hasImage) return false;
         // Skip if it's in the input area (bottom of page, near Reply input)
         if (rect.top > window.innerHeight - 200 && rect.height < 150) return false;
         return true;
