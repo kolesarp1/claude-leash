@@ -101,7 +101,6 @@
           if (substantial.length > bestMessages.length) {
             bestMessages = substantial;
             bestContainer = messageList;
-            console.log('Claude Code: Found', substantial.length, 'messages at depth', depth, 'in container width', Math.round(rect.width));
           }
 
           // Go deeper
@@ -122,14 +121,12 @@
         window.claudeLeashAllElements = bestMessages;
         // For Claude Code, messages ARE the user messages for now (no separate tracking)
         window.claudeLeashUserMessages = bestMessages;
-        console.log('Claude Code: Using', bestMessages.length, 'messages for hiding');
       }
     } else {
       // === Regular Claude.ai ===
       // Simple approach: count user messages, hide everything above a cutoff point
 
       const userMessages = [...document.querySelectorAll('[class*="font-user-message"]')];
-      console.log('Claude.ai: Found', userMessages.length, 'user messages');
 
       if (userMessages.length > 0) {
         // Sort user messages by vertical position
@@ -183,8 +180,6 @@
           messages = userMessages; // For counting
           window.claudeLeashAllElements = allChildren; // For hiding
           window.claudeLeashUserMessages = userMessages; // For cutoff point
-
-          console.log('Claude.ai: Found', allChildren.length, 'hideable elements at message list level');
         } else {
           messages = userMessages;
         }
@@ -245,7 +240,6 @@
 
     if (cropMode === 'lines') {
       // Line-based cropping
-      console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} by LINES - total messages: ${total}, maxLines: ${maxLines}`);
 
       if (isCollapsed && window.claudeLeashAllElements && window.claudeLeashAllElements.length > 0) {
         const allElements = window.claudeLeashAllElements;
@@ -280,14 +274,10 @@
             msg.closest && allElements.slice(0, cutoffIndex + 1).some(el => el.contains(msg))
           ).length;
         }
-
-        console.log(`Claude Leash (lines): Cutoff at element index ${cutoffIndex}, hiding ${actuallyHidden} of ${allElements.length} elements (~${totalLinesFromBottom} lines visible)`);
       }
     } else {
       // Message-based cropping (original behavior)
       hideCount = Math.max(0, total - keepVisible);
-
-      console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} - total: ${total}, keep: ${keepVisible}, will hide: ${isCollapsed ? hideCount : 0}`);
 
       if (isCollapsed && hideCount > 0 && window.claudeLeashUserMessages && window.claudeLeashAllElements) {
         // Find the cutoff user message (the last one we want to hide)
@@ -326,13 +316,9 @@
               actuallyHidden++;
             }
           }
-
-          console.log(`Claude Leash: Cutoff at element index ${cutoffIndex}, hiding ${actuallyHidden} of ${allElements.length}`);
         }
       }
     }
-
-    console.log(`Claude Leash: Applied - ${actuallyHidden} elements hidden, mode: ${cropMode}`);
 
     // Refresh scrollbar after DOM changes
     setTimeout(refreshScrollbar, 100);
@@ -435,7 +421,6 @@
 
       // Only reapply if total INCREASED (new messages added)
       if (newTotal > originalTotal && originalTotal > 0) {
-        console.log('Claude Leash: Detected new content, reapplying...');
         applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed, currentSettings.cropMode, currentSettings.maxLines);
       }
     }, 2000);
