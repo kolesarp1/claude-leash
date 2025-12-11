@@ -10,16 +10,16 @@
   let originalTotal = 0; // Track original count before hiding
   let isApplying = false; // Prevent re-entry during apply
 
-  // Count approximate lines in an element based on text content
+  // Count approximate lines in an element based on visual height
   function countLines(element) {
-    const text = element.innerText || '';
-    // Count actual newlines
-    const newlines = (text.match(/\n/g) || []).length;
-    // Estimate additional wrapping lines based on text length and avg chars per line (~80 chars)
-    const avgCharsPerLine = 80;
-    const estimatedWrapLines = Math.floor(text.length / avgCharsPerLine);
-    // Use the higher estimate - either newlines or wrapped text
-    return Math.max(newlines + 1, estimatedWrapLines);
+    // Use the element's visual height divided by typical line height
+    // This is more accurate than counting text/newlines because it accounts for:
+    // - Code blocks with syntax highlighting
+    // - Images and other embedded content
+    // - Actual rendered font sizes and line heights
+    const rect = element.getBoundingClientRect();
+    const lineHeight = 24; // Typical line height in pixels for Claude's UI
+    return Math.max(1, Math.ceil(rect.height / lineHeight));
   }
 
   // Load settings from storage
