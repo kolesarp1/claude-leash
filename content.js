@@ -191,12 +191,12 @@
       
       // Also find standalone image containers in the conversation
       // These may be file attachments that aren't inside text message containers
-      // Broad selector: any img in conversation area that's not tiny (icons)
+      // Only look for LARGE images (actual screenshots, not avatars/icons)
       const allImages = document.querySelectorAll('img');
       for (const img of allImages) {
         const imgRect = img.getBoundingClientRect();
-        // Skip tiny images (icons, avatars) and images outside conversation area
-        if (imgRect.width < 50 || imgRect.height < 50) continue;
+        // Skip small images (icons, avatars) - real screenshots are usually >150px
+        if (imgRect.width < 150 || imgRect.height < 100) continue;
         if (imgRect.left < 100) continue; // Skip sidebar images
 
         // Walk up to find a reasonable container
@@ -212,11 +212,12 @@
           container = parent;
         }
 
-        // Only add if in conversation area (reasonable position and size)
+        // Only add if in conversation area and not already in a found container
         const rect = container.getBoundingClientRect();
-        if (rect.left > 100 && rect.width > 100 && rect.height > 50) {
+        const alreadyFound = [...foundContainers].some(fc => fc.contains(container) || container.contains(fc));
+        if (!alreadyFound && rect.left > 100 && rect.width > 100 && rect.height > 50) {
           foundContainers.add(container);
-          console.log('Claude.ai: Found image container at y=' + Math.round(rect.top));
+          console.log('Claude.ai: Found standalone image at y=' + Math.round(rect.top), 'size=' + Math.round(imgRect.width) + 'x' + Math.round(imgRect.height));
         }
       }
 
