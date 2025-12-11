@@ -63,8 +63,10 @@
 
       for (const container of scrollContainers) {
         const rect = container.getBoundingClientRect();
-        // Main conversation should be large and in the center/right
+        // Main conversation should be large, tall, and NOT in the left sidebar
+        // Sidebar is typically < 400px from left edge
         if (rect.width < 300 || rect.height < 200) continue;
+        if (rect.left < 400 && rect.width < 600) continue; // Skip sidebar
 
         // Find the message list level by drilling down
         let messageList = container;
