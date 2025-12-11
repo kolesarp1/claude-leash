@@ -1,17 +1,19 @@
 // Background service worker - manages badge
 const STORAGE_KEY = 'claudeCollapseSettings';
 
-// Update badge with visible/total format
+// Update badge with just visible amount in "Xk" format
 function updateBadge(tabId, visible, total, isCollapsed) {
   if (total === 0) {
     chrome.action.setBadgeText({ tabId, text: '' });
     return;
   }
-  
-  const text = `${visible}/${total}`;
+
+  // Show visible amount rounded to nearest k
+  const visibleK = Math.round(visible / 1000);
+  const text = visibleK + 'k';
   chrome.action.setBadgeText({ tabId, text });
-  
-  // Purple when collapsed, gray when showing all
+
+  // Purple when collapsed and hiding content, gray otherwise
   const color = isCollapsed && visible < total ? '#8b5cf6' : '#666666';
   chrome.action.setBadgeBackgroundColor({ tabId, color });
 }

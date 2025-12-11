@@ -10,6 +10,7 @@
   let isApplying = false;
   let cachedContainer = null;
   let originalTotalHeight = 0;
+  let lastLoggedVisible = 0; // Track last logged value to reduce spam
 
   // Load settings from storage
   async function loadSettings() {
@@ -31,7 +32,10 @@
   function getScrollContainer(forceRefresh = false) {
     // Return cached container if still valid and in document
     if (!forceRefresh && cachedContainer && document.contains(cachedContainer)) {
-      return cachedContainer;
+      // Only use cache if it still has reasonable content
+      if (cachedContainer.scrollHeight > 2000) {
+        return cachedContainer;
+      }
     }
 
     const containers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"]');
@@ -41,38 +45,25 @@
     for (const container of containers) {
       const rect = container.getBoundingClientRect();
       // Skip tiny containers
-      if (rect.width < 200 || rect.height < 100) continue;
+      if (rect.width < 300 || rect.height < 200) continue;
 
       // Skip left sidebar (typically narrow and on the left)
-      if (rect.left < 100 && rect.width < 350) continue;
+      if (rect.left < 150 && rect.width < 400) continue;
 
-      // Must be in the main content area (not too far left)
-      if (rect.left < 200 && rect.width < 500) continue;
-
-      // Prefer container with most scrollable content
-      // But require minimum height to avoid picking small UI elements
-      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > 1000) {
+      // Must have significant scrollable content (not sidebar/small panels)
+      // 2000px minimum = roughly 80+ lines of content
+      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > 2000) {
         best = container;
         bestScrollHeight = container.scrollHeight;
       }
     }
 
-    // Fallback: if no large container found, pick any reasonable one
-    if (!best) {
-      for (const container of containers) {
-        const rect = container.getBoundingClientRect();
-        if (rect.width > 400 && rect.height > 200) {
-          if (container.scrollHeight > bestScrollHeight) {
-            best = container;
-            bestScrollHeight = container.scrollHeight;
-          }
-        }
-      }
+    // Only update cache if we found something good
+    if (best) {
+      cachedContainer = best;
     }
 
-    cachedContainer = best;
-    console.log('Claude Leash: Found container with scrollHeight', bestScrollHeight);
-    return best;
+    return cachedContainer;
   }
 
   // Find hideable content elements within the container
@@ -89,7 +80,6 @@
     });
 
     if (elements.length > 5) {
-      console.log('Claude Leash: Found', elements.length, 'elements via data-testid');
       return elements;
     }
 
@@ -120,7 +110,6 @@
       }
     }
 
-    console.log('Claude Leash: Found', bestLevel.length, 'elements via tree walk');
     return bestLevel;
   }
 
@@ -214,7 +203,11 @@
       isApplying = false;
     }, 150);
 
-    console.log(`Claude Leash: ${isCollapsed ? 'Collapsed' : 'Expanded'} - ${Math.round(visibleHeight/1000)}k/${Math.round(displayTotal/1000)}k px visible`);
+    // Only log if significant change (>2k difference)
+    if (Math.abs(visibleHeight - lastLoggedVisible) > 2000) {
+      console.log(`Claude Leash: ${Math.round(visibleHeight/1000)}k/${Math.round(displayTotal/1000)}k px visible`);
+      lastLoggedVisible = visibleHeight;
+    }
     return {
       success: true,
       totalHeight: displayTotal,
