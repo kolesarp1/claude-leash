@@ -54,142 +54,123 @@
     
     if (isClaudeCode()) {
       // === Claude Code Web ===
-      // Strategy: Find the main conversation container and get its direct children
-      // which should be the conversation turns
-      
-      // Look for the main scroll container in the conversation area
+      // Find conversation container and get all message elements
+
+      // Find the main conversation container
       const scrollContainers = document.querySelectorAll('[class*="overflow-y-auto"]');
-      
+      let bestContainer = null;
+      let bestMessages = [];
+
       for (const container of scrollContainers) {
         const rect = container.getBoundingClientRect();
-        // Main conversation area should be large and on the right side
-        if (rect.width < 300 || rect.height < 200 || rect.left < 200) continue;
-        
-        // Walk down to find the level with conversation turns
-        let current = container;
-        for (let depth = 0; depth < 15; depth++) {
-          const children = [...current.children].filter(c => c.tagName === 'DIV');
-          
-          // Check if these children look like conversation turns
-          // (each should have substantial content and there should be multiple)
-          const substantialChildren = children.filter(c => {
+        // Main conversation should be large, tall, and NOT in the left sidebar
+        // Sidebar is typically < 400px from left edge
+        if (rect.width < 300 || rect.height < 200) continue;
+        if (rect.left < 400 && rect.width < 600) continue; // Skip sidebar
+
+        // Find the message list level by drilling down
+        let messageList = container;
+        for (let depth = 0; depth < 10; depth++) {
+          const children = [...messageList.children].filter(c => c.tagName === 'DIV');
+
+          // Check if this level has multiple substantial children (messages)
+          const substantial = children.filter(c => {
             const text = c.innerText || '';
-            return text.length > 30;
+            const childRect = c.getBoundingClientRect();
+            return text.length > 30 && childRect.height > 50;
           });
-          
-          if (substantialChildren.length >= 2) {
-            // Found it! These are our conversation turns
-            messages = substantialChildren;
-            console.log('Claude Code: Found', messages.length, 'turns at depth', depth);
+
+          if (substantial.length > bestMessages.length) {
+            bestMessages = substantial;
+            bestContainer = messageList;
+            console.log('Claude Code: Found', substantial.length, 'messages at depth', depth, 'in container width', Math.round(rect.width));
+          }
+
+          // Go deeper
+          const firstChild = children.find(c => {
+            const childRect = c.getBoundingClientRect();
+            return childRect.height > 100;
+          });
+          if (firstChild) {
+            messageList = firstChild;
+          } else {
             break;
           }
-          
-          // Go one level deeper
-          const firstChild = current.querySelector(':scope > div');
-          if (!firstChild) break;
-          current = firstChild;
         }
-        
-        if (messages.length > 0) break;
       }
-      
-      // Fallback: use individual bubbles if we couldn't find turns
-      if (messages.length === 0) {
-        const bubbles = document.querySelectorAll('.bg-bg-200.rounded-lg.px-3.py-2');
-        messages = [...bubbles].filter(el => {
-          const text = el.innerText || '';
-          if (text.length < 20) return false;
-          const rect = el.getBoundingClientRect();
-          if (rect.left < 200) return false;
-          return true;
-        });
-        console.log('Claude Code: Fallback - using', messages.length, 'bubbles');
+
+      if (bestMessages.length > 0) {
+        messages = bestMessages;
+        window.claudeLeashAllElements = bestMessages;
+        // For Claude Code, messages ARE the user messages for now (no separate tracking)
+        window.claudeLeashUserMessages = bestMessages;
+        console.log('Claude Code: Using', bestMessages.length, 'messages for hiding');
       }
     } else {
       // === Regular Claude.ai ===
-      // Strategy: Find elements containing font-user-message or font-claude-response
-      // These are the actual message blocks we want to hide/show
-      
-      const userMessages = document.querySelectorAll('[class*="font-user-message"]');
-      const claudeResponses = document.querySelectorAll('[class*="font-claude-response"]');
-      
-      console.log('Claude.ai: Raw counts - user:', userMessages.length, 'claude:', claudeResponses.length);
-      
-      // Find top-level message containers
-      // For user messages: walk up to find a reasonable container
-      const foundContainers = new Set();
-      
-      // Process user messages
-      for (const userMsg of userMessages) {
-        let container = userMsg;
-        // Walk up to find a container that's a reasonable size
-        for (let i = 0; i < 8; i++) {
-          const parent = container.parentElement;
+      // Simple approach: count user messages, hide everything above a cutoff point
+
+      const userMessages = [...document.querySelectorAll('[class*="font-user-message"]')];
+      console.log('Claude.ai: Found', userMessages.length, 'user messages');
+
+      if (userMessages.length > 0) {
+        // Sort user messages by vertical position
+        userMessages.sort((a, b) => {
+          return a.getBoundingClientRect().top - b.getBoundingClientRect().top;
+        });
+
+        // Find the conversation container (walk up from first user message)
+        let conversationContainer = null;
+        let current = userMessages[0];
+        for (let i = 0; i < 20; i++) {
+          const parent = current.parentElement;
           if (!parent) break;
-          
           const rect = parent.getBoundingClientRect();
-          // Stop if we hit a very wide container (likely the main scroll area)
-          if (rect.width > 900) break;
-          // Stop if we hit something with many children (likely the turn list)
-          const siblings = [...parent.children].filter(c => c.tagName === 'DIV');
-          if (siblings.length > 3) {
-            // This parent is the turn list, so current container is the turn
+          if (rect.width > 900) {
+            conversationContainer = parent;
             break;
           }
-          container = parent;
+          current = parent;
         }
-        foundContainers.add(container);
-      }
-      
-      // Process Claude responses similarly
-      for (const resp of claudeResponses) {
-        // Skip if nested inside another claude-response
-        let isNested = false;
-        let parent = resp.parentElement;
-        while (parent) {
-          if (parent.className?.includes?.('font-claude-response')) {
-            isNested = true;
-            break;
+
+        if (conversationContainer) {
+          // Find the actual message list - look for container with many children
+          let messageList = conversationContainer;
+          for (let depth = 0; depth < 5; depth++) {
+            const children = [...messageList.children].filter(c => c.tagName === 'DIV');
+            if (children.length > 5) {
+              // Found the level with many children
+              break;
+            }
+            // Go deeper - find first substantial child
+            const firstChild = children.find(c => {
+              const rect = c.getBoundingClientRect();
+              return rect.height > 100;
+            });
+            if (firstChild) {
+              messageList = firstChild;
+            } else {
+              break;
+            }
           }
-          parent = parent.parentElement;
+
+          // Get all children at this level
+          const allChildren = [...messageList.children].filter(el => {
+            if (el.tagName !== 'DIV') return false;
+            const rect = el.getBoundingClientRect();
+            return rect.height > 30 && rect.width > 100;
+          });
+
+          // Store user messages and all hideable elements
+          messages = userMessages; // For counting
+          window.claudeLeashAllElements = allChildren; // For hiding
+          window.claudeLeashUserMessages = userMessages; // For cutoff point
+
+          console.log('Claude.ai: Found', allChildren.length, 'hideable elements at message list level');
+        } else {
+          messages = userMessages;
         }
-        if (isNested) continue;
-        
-        let container = resp;
-        for (let i = 0; i < 8; i++) {
-          const parent = container.parentElement;
-          if (!parent) break;
-          
-          const rect = parent.getBoundingClientRect();
-          if (rect.width > 900) break;
-          const siblings = [...parent.children].filter(c => c.tagName === 'DIV');
-          if (siblings.length > 3) break;
-          container = parent;
-        }
-        foundContainers.add(container);
       }
-      
-      // Convert to array and filter out tiny/invisible elements and UI components
-      messages = [...foundContainers].filter(el => {
-        const rect = el.getBoundingClientRect();
-        // Must have reasonable size
-        if (rect.height < 50 || rect.width < 200) return false;
-        // Skip elements that are just model selectors or other UI
-        const text = el.innerText?.trim() || '';
-        if (text.length < 20) return false;
-        // Skip if it's in the input area (bottom of page, near Reply input)
-        if (rect.top > window.innerHeight - 200 && rect.height < 150) return false;
-        return true;
-      });
-      
-      console.log('Claude.ai: Found', messages.length, 'message containers');
-      
-      // If we have too many (found individual blocks not turns), try to pair them
-      // Count unique user messages as our turn count
-      const turnCount = userMessages.length;
-      console.log('Claude.ai: User turn count:', turnCount);
-      
-      console.log('Claude.ai: Total found:', messages.length);
     }
     
     // Sort by vertical position
@@ -204,11 +185,14 @@
 
   // Report status to background script for badge update
   function reportStatus() {
-    // If we have cached messages, use them for accurate count
-    const messages = cachedMessages.length > 0 ? cachedMessages : findMessages();
-    const hidden = messages.filter(m => m.style.display === 'none').length;
-    const total = originalTotal > 0 ? originalTotal : messages.length;
-    const visible = total - hidden;
+    const total = originalTotal > 0 ? originalTotal : (cachedMessages.length || findMessages().length);
+
+    // Calculate visible based on settings
+    let visible = total;
+    if (currentSettings.isCollapsed) {
+      visible = Math.min(currentSettings.keepVisible, total);
+    }
+    const hidden = total - visible;
 
     chrome.runtime.sendMessage({
       action: 'updateBadge',
@@ -223,31 +207,67 @@
   // Apply collapse/expand
   function applyCollapse(keepVisible, isCollapsed) {
     currentSettings = { keepVisible, isCollapsed };
-    
-    // First, unhide everything to get accurate message list
+
+    // First, unhide everything
+    if (window.claudeLeashAllElements) {
+      window.claudeLeashAllElements.forEach(el => el.style.removeProperty('display'));
+    }
     cachedMessages.forEach(msg => msg.style.removeProperty('display'));
-    
-    // Find all messages (now that nothing is hidden)
+
+    // Find all messages (user messages for counting)
     const messages = findMessages();
-    cachedMessages = messages; // Cache for later
-    originalTotal = messages.length; // Track original total
-    
-    const total = messages.length;
+    cachedMessages = messages;
+    originalTotal = messages.length;
+
+    const total = messages.length; // Number of user messages
     const hideCount = Math.max(0, total - keepVisible);
     let actuallyHidden = 0;
 
     console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} - total: ${total}, keep: ${keepVisible}, will hide: ${isCollapsed ? hideCount : 0}`);
 
-    messages.forEach((msg, i) => {
-      if (i < hideCount && isCollapsed) {
-        msg.style.setProperty('display', 'none', 'important');
-        actuallyHidden++;
-      } else {
-        msg.style.removeProperty('display');
+    if (isCollapsed && hideCount > 0 && window.claudeLeashUserMessages && window.claudeLeashAllElements) {
+      // Find the cutoff user message (the last one we want to hide)
+      const cutoffUserMsg = window.claudeLeashUserMessages[hideCount - 1];
+      if (cutoffUserMsg) {
+        // Find which element in allElements contains or comes after the cutoff
+        // Use DOM order, not visual positions (which change with scroll)
+        const allElements = window.claudeLeashAllElements;
+
+        // Find the index of the element containing the cutoff user message
+        let cutoffIndex = -1;
+        for (let i = 0; i < allElements.length; i++) {
+          if (allElements[i].contains(cutoffUserMsg)) {
+            cutoffIndex = i;
+            break;
+          }
+        }
+
+        // If not found directly, find elements that come before the first visible user message
+        if (cutoffIndex === -1) {
+          const firstVisibleUserMsg = window.claudeLeashUserMessages[hideCount];
+          if (firstVisibleUserMsg) {
+            for (let i = 0; i < allElements.length; i++) {
+              if (allElements[i].contains(firstVisibleUserMsg)) {
+                cutoffIndex = i - 1; // Hide everything before this
+                break;
+              }
+            }
+          }
+        }
+
+        // Hide all elements up to and including the cutoff index
+        if (cutoffIndex >= 0) {
+          for (let i = 0; i <= cutoffIndex; i++) {
+            allElements[i].style.setProperty('display', 'none', 'important');
+            actuallyHidden++;
+          }
+        }
+
+        console.log(`Claude Leash: Cutoff at element index ${cutoffIndex}, hiding ${actuallyHidden} of ${allElements.length}`);
       }
-    });
-    
-    console.log(`Claude Leash: Applied - ${actuallyHidden} hidden, ${total - actuallyHidden} visible`);
+    }
+
+    console.log(`Claude Leash: Applied - ${actuallyHidden} elements hidden, keeping ${keepVisible} messages`);
 
     // Refresh scrollbar after DOM changes
     setTimeout(refreshScrollbar, 100);
@@ -258,8 +278,8 @@
     return {
       success: true,
       total,
-      hidden: actuallyHidden,
-      visible: total - actuallyHidden
+      hidden: hideCount,
+      visible: total - hideCount
     };
   }
 
@@ -281,13 +301,24 @@
     setInterval(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        setTimeout(() => {
-          if (currentSettings.isCollapsed) {
-            applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
-          } else {
-            reportStatus();
-          }
-        }, 500);
+        // Reset cached data on URL change
+        cachedMessages = [];
+        originalTotal = 0;
+        window.claudeLeashAllElements = null;
+        window.claudeLeashUserMessages = null;
+
+        // For Claude Code Web, wait longer and retry multiple times
+        // because session content loads asynchronously
+        const retryDelays = isClaudeCode() ? [500, 1000, 2000, 3000] : [500];
+        retryDelays.forEach(delay => {
+          setTimeout(() => {
+            if (currentSettings.isCollapsed) {
+              applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
+            } else {
+              reportStatus();
+            }
+          }, delay);
+        });
       }
     }, 300);
   }
@@ -305,9 +336,24 @@
       }, 500);
     });
 
-    const scrollContainer = document.querySelector('[class*="overflow-y-auto"]');
-    const target = scrollContainer || document.body;
-    observer.observe(target, { childList: true, subtree: true });
+    // Observe document body to catch all changes including session switches
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Periodic check for Claude Code Web - reapply if messages are found but not hidden
+  function watchForLateContent() {
+    if (!isClaudeCode()) return;
+
+    setInterval(() => {
+      if (!currentSettings.isCollapsed) return;
+
+      // Check if we should reapply
+      const messages = findMessages();
+      if (messages.length > 0 && messages.length !== originalTotal) {
+        console.log('Claude Leash: Detected content change, reapplying...');
+        applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
+      }
+    }, 2000);
   }
 
   // Listen for messages from popup and background
@@ -471,6 +517,7 @@
     await loadSettings();
     watchUrlChanges();
     watchNewMessages();
+    watchForLateContent();
     setTimeout(reportStatus, 1000);
   }
 
