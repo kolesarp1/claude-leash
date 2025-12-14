@@ -305,6 +305,28 @@
       font-weight: 500;
       transition: all 0.2s;
     }
+
+    /* Checkbox styles */
+    .checkbox-group {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .checkbox-label input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #8b5cf6;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body class="light">
@@ -338,6 +360,20 @@
     </button>
     <button class="btn btn-secondary" id="refreshBtn" title="Refresh">🔄</button>
     <button class="btn btn-secondary" id="debugBtn" title="Debug">🔍</button>
+  </div>
+
+  <div class="control-group">
+    <label class="control-label">Enable for</label>
+    <div class="checkbox-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="enableClaudeAi" checked>
+        Claude.ai
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="enableClaudeCode" checked>
+        Claude Code
+      </label>
+    </div>
   </div>
 
   <div class="footer">

@@ -9,6 +9,8 @@
   let isCollapsed = false;
   let maxHeight = 12000; // pixels
   let scale = 1;
+  let enableClaudeAi = true;
+  let enableClaudeCode = true;
   let currentTheme = 'light';
 
   // Elements
@@ -22,6 +24,8 @@
   const toggleText = document.getElementById('toggleText');
   const refreshBtn = document.getElementById('refreshBtn');
   const debugBtn = document.getElementById('debugBtn');
+  const enableClaudeAiEl = document.getElementById('enableClaudeAi');
+  const enableClaudeCodeEl = document.getElementById('enableClaudeCode');
   const themeLightBtn = document.getElementById('themeLightBtn');
   const themeDarkBtn = document.getElementById('themeDarkBtn');
   const themeAutoBtn = document.getElementById('themeAutoBtn');
@@ -89,11 +93,16 @@
         }
         scale = result[STORAGE_KEY].scale || 1;
         isCollapsed = result[STORAGE_KEY].isCollapsed || false;
+        // Interface toggles - default to true if not set
+        enableClaudeAi = result[STORAGE_KEY].enableClaudeAi !== false;
+        enableClaudeCode = result[STORAGE_KEY].enableClaudeCode !== false;
       }
       sliderEl.value = maxHeight;
       sliderValueEl.textContent = formatPixels(maxHeight);
       scaleSliderEl.value = scale;
       scaleValueEl.textContent = scale + 'x';
+      enableClaudeAiEl.checked = enableClaudeAi;
+      enableClaudeCodeEl.checked = enableClaudeCode;
       updateToggleButton();
     } catch (e) {}
   }
@@ -101,7 +110,7 @@
   async function saveSettings() {
     try {
       await chrome.storage.local.set({
-        [STORAGE_KEY]: { maxHeight, scale, isCollapsed }
+        [STORAGE_KEY]: { maxHeight, scale, isCollapsed, enableClaudeAi, enableClaudeCode }
       });
     } catch (e) {}
   }
@@ -133,6 +142,13 @@
 
   function updateStatus(response) {
     if (response && response.success) {
+      // Check if disabled for current interface
+      if (response.disabled) {
+        statusEl.textContent = 'Disabled for this interface';
+        statusEl.classList.remove('not-claude');
+        return;
+      }
+
       const { totalHeight, hiddenHeight, visibleHeight } = response;
       // Also support old format
       const total = totalHeight || response.total || 0;
@@ -155,7 +171,12 @@
   async function applyCollapse() {
     // Apply scale factor to maxHeight
     const effectiveHeight = Math.round(maxHeight * scale);
-    const response = await sendMessage('collapse', { maxHeight: effectiveHeight, isCollapsed });
+    const response = await sendMessage('collapse', {
+      maxHeight: effectiveHeight,
+      isCollapsed,
+      enableClaudeAi,
+      enableClaudeCode
+    });
     updateStatus(response);
   }
 
@@ -228,6 +249,19 @@
     if (response?.success) {
       statusEl.textContent = `Found ${response.found} blocks, ${formatPixels(response.scrollHeight)}px`;
     }
+  });
+
+  // Interface toggle checkboxes
+  enableClaudeAiEl.addEventListener('change', async () => {
+    enableClaudeAi = enableClaudeAiEl.checked;
+    await saveSettings();
+    await applyCollapse();
+  });
+
+  enableClaudeCodeEl.addEventListener('change', async () => {
+    enableClaudeCode = enableClaudeCodeEl.checked;
+    await saveSettings();
+    await applyCollapse();
   });
 
   init();

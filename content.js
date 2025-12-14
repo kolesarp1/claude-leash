@@ -5,7 +5,12 @@
 
   const STORAGE_KEY = 'claudeCollapseSettings';
 
-  let currentSettings = { maxHeight: 12000, isCollapsed: false }; // Default ~500 lines at 24px
+  let currentSettings = {
+    maxHeight: 12000,
+    isCollapsed: false,
+    enableClaudeAi: true,
+    enableClaudeCode: true
+  };
   let lastUrl = location.href;
   let isApplying = false;
   let cachedContainer = null;
@@ -24,8 +29,19 @@
           currentSettings.maxHeight = result[STORAGE_KEY].maxLines * 24; // Convert
         }
         currentSettings.isCollapsed = result[STORAGE_KEY].isCollapsed || false;
+        // Interface toggles - default to true if not set
+        currentSettings.enableClaudeAi = result[STORAGE_KEY].enableClaudeAi !== false;
+        currentSettings.enableClaudeCode = result[STORAGE_KEY].enableClaudeCode !== false;
       }
     } catch (e) {}
+  }
+
+  // Check if extension is enabled for current interface
+  function isEnabledForCurrentInterface() {
+    if (isClaudeCode()) {
+      return currentSettings.enableClaudeCode;
+    }
+    return currentSettings.enableClaudeAi;
   }
 
   // Find the main scroll container - look for the one with the most scrollable content
@@ -120,22 +136,72 @@
       }
     }
 
-    // Regular Claude.ai or fallback: Try data-testid first
-    elements = [...container.querySelectorAll('[data-testid]')].filter(el => {
-      const rect = el.getBoundingClientRect();
-      return rect.height > 50 && rect.width > 200;
-    });
+    // Regular Claude.ai: Find user messages by class, then find their turn containers
+    const userMessages = [...document.querySelectorAll('[class*="font-user-message"]')];
+    console.log(`Claude Leash: Found ${userMessages.length} user message elements`);
 
-    if (elements.length > 5) {
-      return elements;
+    if (userMessages.length > 0) {
+      // Sort by vertical position
+      userMessages.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+      // Find the conversation container by walking up from first user message
+      let conversationContainer = null;
+      let current = userMessages[0];
+      for (let i = 0; i < 20; i++) {
+        const parent = current.parentElement;
+        if (!parent) break;
+        const rect = parent.getBoundingClientRect();
+        if (rect.width > 700) {
+          conversationContainer = parent;
+          break;
+        }
+        current = parent;
+      }
+
+      if (conversationContainer) {
+        // Drill down to find the level with multiple turn containers
+        let messageList = conversationContainer;
+        for (let depth = 0; depth < 8; depth++) {
+          const children = [...messageList.children].filter(c => c.tagName === 'DIV');
+          if (children.length > 3) {
+            // Found level with multiple children - these are likely turns
+            break;
+          }
+          // Go deeper into first substantial child
+          const firstChild = children.find(c => {
+            const rect = c.getBoundingClientRect();
+            return rect.height > 100;
+          });
+          if (firstChild) {
+            messageList = firstChild;
+          } else {
+            break;
+          }
+        }
+
+        // Get all substantial children at this level
+        const allChildren = [...messageList.children].filter(el => {
+          if (el.tagName !== 'DIV') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.height > 30 && rect.width > 200;
+        });
+
+        if (allChildren.length > 0) {
+          console.log(`Claude Leash: Found ${allChildren.length} turn containers`);
+          return allChildren;
+        }
+      }
+
+      // Fallback: just return the user message elements themselves
+      return userMessages;
     }
 
-    // Fallback: Walk down to find the level with most direct children
-    let current = container;
+    // Final fallback: Walk down to find the level with most direct children
+    let currentEl = container;
     let bestLevel = [];
 
     for (let depth = 0; depth < 10; depth++) {
-      const children = [...current.children].filter(c => {
+      const children = [...currentEl.children].filter(c => {
         if (c.tagName !== 'DIV') return false;
         const rect = c.getBoundingClientRect();
         return rect.height > 30 && rect.width > 200;
@@ -146,12 +212,12 @@
       }
 
       // Go into the largest child
-      const next = [...current.children]
+      const next = [...currentEl.children]
         .filter(c => c.tagName === 'DIV')
         .sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
 
       if (next && next.scrollHeight > 200) {
-        current = next;
+        currentEl = next;
       } else {
         break;
       }
@@ -172,11 +238,26 @@
   }
 
   // Apply the collapse - hide content above the pixel limit
-  function applyCollapse(maxHeight, isCollapsed) {
+  function applyCollapse(maxHeight, isCollapsed, enableClaudeAi, enableClaudeCode) {
     if (isApplying) return { success: true };
     isApplying = true;
 
-    currentSettings = { maxHeight, isCollapsed };
+    // Update settings if provided
+    currentSettings.maxHeight = maxHeight;
+    currentSettings.isCollapsed = isCollapsed;
+    if (enableClaudeAi !== undefined) currentSettings.enableClaudeAi = enableClaudeAi;
+    if (enableClaudeCode !== undefined) currentSettings.enableClaudeCode = enableClaudeCode;
+
+    // Check if enabled for current interface
+    if (!isEnabledForCurrentInterface()) {
+      // Unhide everything and return
+      if (window.claudeLeashHidden) {
+        window.claudeLeashHidden.forEach(el => el.style.removeProperty('display'));
+        window.claudeLeashHidden = [];
+      }
+      isApplying = false;
+      return { success: true, disabled: true, total: 0, hidden: 0, visible: 0 };
+    }
 
     // Unhide any previously hidden elements first (to get accurate measurements)
     if (window.claudeLeashHidden) {
@@ -326,7 +407,12 @@
         case 'collapse':
           // Support both maxHeight (new) and maxLines (old)
           const height = message.maxHeight || (message.maxLines * 24);
-          const result = applyCollapse(height, message.isCollapsed);
+          const result = applyCollapse(
+            height,
+            message.isCollapsed,
+            message.enableClaudeAi,
+            message.enableClaudeCode
+          );
           sendResponse(result);
           break;
 
