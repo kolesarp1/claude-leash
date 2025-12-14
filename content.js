@@ -66,14 +66,61 @@
     return cachedContainer;
   }
 
+  // Detect if we're on Claude Code Web
+  function isClaudeCode() {
+    return location.pathname.startsWith('/code');
+  }
+
   // Find hideable content elements within the container
   function findContentElements(container) {
     if (!container) return [];
 
-    // Try multiple strategies to find message-like elements
     let elements = [];
 
-    // Strategy 1: Look for elements with data-testid (Claude uses these)
+    if (isClaudeCode()) {
+      // Claude Code Web: drill down to find conversation turns
+      // The turns are nested several levels deep in the scroll container
+      let current = container;
+      let bestLevel = [];
+      let bestDepth = -1;
+
+      for (let depth = 0; depth < 15; depth++) {
+        const children = [...current.children].filter(c => {
+          if (c.tagName !== 'DIV') return false;
+          const rect = c.getBoundingClientRect();
+          const text = c.innerText || '';
+          // Must have substantial text content and size
+          return text.length > 30 && rect.height > 50 && rect.width > 200;
+        });
+
+        // Keep track of the level with most substantial children
+        if (children.length > bestLevel.length && children.length >= 2) {
+          bestLevel = children;
+          bestDepth = depth;
+        }
+
+        // Go deeper - find first substantial child to continue drilling
+        const nextChild = [...current.children]
+          .filter(c => c.tagName === 'DIV')
+          .find(c => {
+            const rect = c.getBoundingClientRect();
+            return rect.height > 100;
+          });
+
+        if (nextChild) {
+          current = nextChild;
+        } else {
+          break;
+        }
+      }
+
+      if (bestLevel.length > 0) {
+        console.log(`Claude Leash: Found ${bestLevel.length} turns at depth ${bestDepth}`);
+        return bestLevel;
+      }
+    }
+
+    // Regular Claude.ai or fallback: Try data-testid first
     elements = [...container.querySelectorAll('[data-testid]')].filter(el => {
       const rect = el.getBoundingClientRect();
       return rect.height > 50 && rect.width > 200;
@@ -83,7 +130,7 @@
       return elements;
     }
 
-    // Strategy 2: Walk down to find the level with most direct children
+    // Fallback: Walk down to find the level with most direct children
     let current = container;
     let bestLevel = [];
 
@@ -158,6 +205,7 @@
 
     if (isCollapsed && totalHeight > maxHeight) {
       const elements = findContentElements(container);
+      console.log(`Claude Leash: Found ${elements.length} elements to potentially hide`);
 
       if (elements.length > 0) {
         // Calculate cumulative heights from bottom
@@ -166,6 +214,8 @@
 
         // First pass: measure all heights
         const heights = elements.map(el => el.getBoundingClientRect().height);
+        const totalElementHeight = heights.reduce((a, b) => a + b, 0);
+        console.log(`Claude Leash: Total element height: ${Math.round(totalElementHeight/1000)}k, maxHeight: ${Math.round(maxHeight/1000)}k`);
 
         for (let i = elements.length - 1; i >= 0; i--) {
           heightFromBottom += heights[i];
@@ -179,6 +229,8 @@
             break;
           }
         }
+
+        console.log(`Claude Leash: Hiding ${hiddenElements.length} elements (${Math.round(hiddenHeight/1000)}k px)`);
 
         // Hide elements
         hiddenElements.forEach(el => {
@@ -289,22 +341,49 @@
           // Force refresh to find the best container
           cachedContainer = null;
           const cont = getScrollContainer(true);
+          console.log('Claude Leash DEBUG:');
+          console.log('  Interface:', isClaudeCode() ? 'Claude Code Web' : 'Claude.ai');
+
           if (cont) {
+            const contRect = cont.getBoundingClientRect();
+            console.log('  Container:', {
+              scrollHeight: cont.scrollHeight,
+              clientHeight: cont.clientHeight,
+              left: Math.round(contRect.left),
+              width: Math.round(contRect.width)
+            });
+
             cont.style.outline = '3px solid red';
             const elements = findContentElements(cont);
+            console.log('  Elements found:', elements.length);
+
             elements.forEach((el, i) => {
+              const rect = el.getBoundingClientRect();
+              const text = (el.innerText || '').slice(0, 50);
+              console.log(`    [${i}] h=${Math.round(rect.height)}px "${text}..."`);
               el.style.outline = `2px solid ${i % 2 === 0 ? 'blue' : 'green'}`;
             });
+
             setTimeout(() => {
               cont.style.outline = '';
               elements.forEach(el => el.style.outline = '');
-            }, 3000);
+            }, 5000);
+
             sendResponse({
               success: true,
               found: elements.length,
-              scrollHeight: cont.scrollHeight
+              scrollHeight: cont.scrollHeight,
+              isClaudeCode: isClaudeCode()
             });
           } else {
+            console.log('  No container found!');
+            // Show all overflow containers for debugging
+            const allContainers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"]');
+            console.log('  All overflow containers:', allContainers.length);
+            allContainers.forEach((c, i) => {
+              const rect = c.getBoundingClientRect();
+              console.log(`    [${i}] ${Math.round(rect.width)}x${Math.round(rect.height)} at left=${Math.round(rect.left)}, scrollH=${c.scrollHeight}`);
+            });
             sendResponse({ success: false, error: 'No container found' });
           }
           break;
