@@ -21,10 +21,11 @@
   let cachedContentParent = null;
   let contentObserver = null;
   let imageObserver = null;
+  let reactHydrated = false; // Track if React has finished hydrating
 
-  // Storage for removed content
-  let removedNodes = [];
-  let totalRemovedHeight = 0;
+  // Storage for hidden content (CSS-only, no DOM removal to avoid React conflicts)
+  let hiddenNodes = [];
+  let totalHiddenHeight = 0;
   let placeholder = null;
   let originalTotalHeight = 0;
 
@@ -98,7 +99,7 @@
     if (!currentSessionId) return;
     sessionStates[currentSessionId] = {
       isCollapsed: currentSettings.isCollapsed,
-      removedCount: removedNodes.length,
+      hiddenCount: hiddenNodes.length,
       timestamp: Date.now()
     };
     // Clean old sessions (keep last 50)
@@ -126,55 +127,36 @@
     return isClaudeCode() ? currentSettings.enableClaudeCode : currentSettings.enableClaudeAi;
   }
 
-  // ============ Image Lazy Loading ============
+  // ============ React Hydration Safety ============
 
-  function setupImageObserver() {
-    if (imageObserver) return;
-
-    imageObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          const img = entry.target;
-          if (img.dataset.claudeLeashLazy) {
-            img.src = img.dataset.claudeLeashLazy;
-            delete img.dataset.claudeLeashLazy;
-            img.removeAttribute('data-claude-leash-lazy');
-            imageObserver.unobserve(img);
-          }
-        }
-      });
-    }, { rootMargin: '200px' }); // Start loading 200px before visible
-  }
-
-  function blockImages(node) {
-    const images = [];
-    node.querySelectorAll('img').forEach(img => {
-      if (img.src && !img.src.startsWith('data:') && !img.dataset.claudeLeashLazy) {
-        images.push({ el: img, src: img.src });
-        img.dataset.claudeLeashLazy = img.src;
-        img.dataset.claudeLeashSrc = img.src; // Backup for restore
-        img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  function waitForReactHydration() {
+    return new Promise(resolve => {
+      // Wait for React to finish hydrating - use multiple signals
+      if (reactHydrated) {
+        resolve();
+        return;
       }
-    });
-    return images;
-  }
 
-  function unblockImages(nodeData) {
-    nodeData.images.forEach(({ el }) => {
-      if (el.dataset.claudeLeashSrc) {
-        el.src = el.dataset.claudeLeashSrc;
-        delete el.dataset.claudeLeashLazy;
-        delete el.dataset.claudeLeashSrc;
+      // Method 1: requestIdleCallback (browser is idle)
+      if (window.requestIdleCallback) {
+        window.requestIdleCallback(() => {
+          reactHydrated = true;
+          resolve();
+        }, { timeout: 3000 });
+      } else {
+        // Method 2: Fallback timeout
+        setTimeout(() => {
+          reactHydrated = true;
+          resolve();
+        }, 2000);
       }
     });
   }
 
-  function setupLazyImagesForVisible(contentParent) {
-    if (!contentParent || !imageObserver) return;
-    contentParent.querySelectorAll('img[data-claude-leash-lazy]').forEach(img => {
-      imageObserver.observe(img);
-    });
-  }
+  // ============ Safe Image Handling (no src modification to avoid React conflicts) ============
+
+  // Instead of modifying img.src, we just track which nodes are hidden
+  // The CSS .claude-leash-hidden will hide them including their images
 
   // ============ Container Detection ============
 
@@ -259,9 +241,10 @@
   function createPlaceholder(hiddenHeight, hiddenCount) {
     const el = document.createElement('div');
     el.id = PLACEHOLDER_ID;
+    const heightK = Math.round(hiddenHeight / 1000);
     el.innerHTML = `
       <div style="font-weight: 600; margin-bottom: 4px;">
-        📦 ${Math.round(hiddenHeight / 1000)}k pixels hidden (${hiddenCount} blocks)
+        📦 ${heightK}k pixels hidden (${hiddenCount} blocks)
       </div>
       <div style="font-size: 11px; opacity: 0.8;">
         Click to restore • Scroll up to load more
@@ -275,7 +258,8 @@
     if (placeholder && placeholder.parentElement) {
       const countEl = placeholder.querySelector('div');
       if (countEl) {
-        countEl.innerHTML = `📦 ${Math.round(totalRemovedHeight / 1000)}k pixels hidden (${removedNodes.length} blocks)`;
+        const heightK = Math.round(totalHiddenHeight / 1000);
+        countEl.innerHTML = `📦 ${heightK}k pixels hidden (${hiddenNodes.length} blocks)`;
       }
     }
   }
@@ -283,10 +267,14 @@
   // ============ Early Intervention - Hide as content loads ============
 
   function setupEarlyIntervention() {
+    // Only run after React has hydrated to avoid conflicts
+    if (!reactHydrated) return;
+
     if (contentObserver) contentObserver.disconnect();
 
     contentObserver = new MutationObserver((mutations) => {
       if (!currentSettings.isCollapsed || !isEnabledForCurrentInterface()) return;
+      if (!reactHydrated) return; // Safety check
 
       const contentParent = cachedContentParent;
       if (!contentParent) return;
@@ -299,15 +287,13 @@
             if (node.nodeType === 1 && node.tagName === 'DIV' &&
                 node.id !== PLACEHOLDER_ID && !node.classList.contains('claude-leash-hidden')) {
               hasNewContent = true;
-              // Immediately block images in new content
-              blockImages(node);
             }
           });
         }
       });
 
       if (hasNewContent) {
-        // Quick reapply
+        // Quick reapply after a small delay
         requestAnimationFrame(() => {
           applyCollapseQuick();
         });
@@ -318,9 +304,9 @@
     contentObserver.observe(document.body, { childList: true, subtree: true });
   }
 
-  // Quick collapse without full recalculation
+  // Quick collapse without full recalculation - CSS only, no DOM removal
   function applyCollapseQuick() {
-    if (isApplying) return;
+    if (isApplying || !reactHydrated) return;
 
     const contentParent = cachedContentParent || getContentParent(getScrollContainer());
     if (!contentParent) return;
@@ -334,17 +320,18 @@
 
     for (let i = children.length - 1; i >= 0; i--) {
       const child = children[i];
-      heightFromBottom += child.offsetHeight || child.getBoundingClientRect().height;
+      const height = Math.round(child.offsetHeight || child.getBoundingClientRect().height);
+      heightFromBottom += height;
 
       if (heightFromBottom > maxHeight) {
-        // Hide all remaining (older) content
+        // Hide all remaining (older) content using CSS class only
         for (let j = 0; j <= i; j++) {
           const node = children[j];
           if (!node.classList.contains('claude-leash-hidden')) {
-            const images = blockImages(node);
+            const nodeHeight = Math.round(node.offsetHeight);
             node.classList.add('claude-leash-hidden');
-            removedNodes.push({ node, height: node.offsetHeight, images, inDom: true });
-            totalRemovedHeight += node.offsetHeight;
+            hiddenNodes.push({ node, height: nodeHeight });
+            totalHiddenHeight += nodeHeight;
           }
         }
         break;
@@ -352,8 +339,8 @@
     }
 
     // Ensure placeholder exists
-    if (removedNodes.length > 0 && (!placeholder || !placeholder.parentElement)) {
-      placeholder = createPlaceholder(totalRemovedHeight, removedNodes.length);
+    if (hiddenNodes.length > 0 && (!placeholder || !placeholder.parentElement)) {
+      placeholder = createPlaceholder(totalHiddenHeight, hiddenNodes.length);
       contentParent.insertBefore(placeholder, contentParent.firstChild);
     } else if (placeholder) {
       updatePlaceholder();
@@ -383,7 +370,7 @@
     if (!isCollapsed) {
       restoreAll();
       const container = getScrollContainer();
-      const total = container ? container.scrollHeight : 0;
+      const total = container ? Math.round(container.scrollHeight) : 0;
       updateBadge(total, total, false);
       isApplying = false;
       saveSessionState();
@@ -412,8 +399,8 @@
       return { success: false, error: 'No content children found' };
     }
 
-    // Measure heights
-    const heights = children.map(el => el.getBoundingClientRect().height);
+    // Measure heights (round to avoid float display issues)
+    const heights = children.map(el => Math.round(el.getBoundingClientRect().height));
     const totalHeight = heights.reduce((a, b) => a + b, 0);
     originalTotalHeight = Math.max(originalTotalHeight, totalHeight);
 
@@ -429,39 +416,30 @@
       }
     }
 
-    // Hide elements above cutoff using CSS class (instant) then remove from DOM
+    // Hide elements above cutoff using CSS class only (no DOM removal to avoid React issues)
     let hiddenHeight = 0;
-    const toRemove = [];
 
     if (cutoffIndex >= 0) {
       for (let i = 0; i <= cutoffIndex; i++) {
         const node = children[i];
         const height = heights[i];
-        const images = blockImages(node);
-        toRemove.push({ node, height, images, inDom: false });
+        node.classList.add('claude-leash-hidden');
+        hiddenNodes.push({ node, height });
         hiddenHeight += height;
       }
 
-      // Remove from DOM
-      toRemove.forEach(data => {
-        data.node.remove();
-        removedNodes.push(data);
-      });
-      totalRemovedHeight = hiddenHeight;
+      totalHiddenHeight = hiddenHeight;
 
       // Add placeholder
       if (!placeholder || !placeholder.parentElement) {
-        placeholder = createPlaceholder(hiddenHeight, toRemove.length);
+        placeholder = createPlaceholder(hiddenHeight, hiddenNodes.length);
         contentParent.insertBefore(placeholder, contentParent.firstChild);
       } else {
         updatePlaceholder();
       }
 
-      console.log(`Claude Leash: Removed ${toRemove.length} blocks (${Math.round(hiddenHeight/1000)}k px)`);
+      console.log(`Claude Leash: Hidden ${hiddenNodes.length} blocks (${Math.round(hiddenHeight/1000)}k px)`);
     }
-
-    // Setup lazy loading for visible images
-    setupLazyImagesForVisible(contentParent);
 
     // Setup early intervention for new content
     setupEarlyIntervention();
@@ -469,84 +447,69 @@
     const visibleHeight = totalHeight - hiddenHeight;
 
     setTimeout(() => {
-      updateBadge(visibleHeight, originalTotalHeight, true);
+      updateBadge(Math.round(visibleHeight), Math.round(originalTotalHeight), true);
       isApplying = false;
       saveSessionState();
     }, 50);
 
     return {
       success: true,
-      totalHeight: originalTotalHeight,
-      hiddenHeight,
-      visibleHeight,
-      total: originalTotalHeight,
-      hidden: hiddenHeight,
-      visible: visibleHeight,
-      removedCount: toRemove.length
+      totalHeight: Math.round(originalTotalHeight),
+      hiddenHeight: Math.round(hiddenHeight),
+      visibleHeight: Math.round(visibleHeight),
+      total: Math.round(originalTotalHeight),
+      hidden: Math.round(hiddenHeight),
+      visible: Math.round(visibleHeight),
+      hiddenCount: hiddenNodes.length
     };
   }
 
   function restoreAll() {
     restoreAllSilent();
     const container = getScrollContainer();
-    const total = container ? container.scrollHeight : 0;
+    const total = container ? Math.round(container.scrollHeight) : 0;
     updateBadge(total, total, currentSettings.isCollapsed);
     saveSessionState();
   }
 
   function restoreAllSilent() {
-    if (removedNodes.length === 0) return;
-
-    const contentParent = cachedContentParent || getContentParent(getScrollContainer());
-    if (!contentParent) return;
+    if (hiddenNodes.length === 0) return;
 
     if (placeholder && placeholder.parentElement) {
       placeholder.remove();
     }
 
-    const insertPoint = contentParent.firstChild;
-    removedNodes.forEach(data => {
-      // Remove hidden class if still in DOM
+    // Just remove the CSS class - nodes are still in DOM
+    hiddenNodes.forEach(data => {
       data.node.classList.remove('claude-leash-hidden');
-      unblockImages(data);
-      if (!data.inDom) {
-        contentParent.insertBefore(data.node, insertPoint);
-      }
     });
 
-    console.log(`Claude Leash: Restored ${removedNodes.length} blocks`);
+    console.log(`Claude Leash: Restored ${hiddenNodes.length} blocks`);
 
-    removedNodes = [];
-    totalRemovedHeight = 0;
+    hiddenNodes = [];
+    totalHiddenHeight = 0;
     placeholder = null;
   }
 
   function restoreChunk(count = 5) {
-    if (removedNodes.length === 0) return;
+    if (hiddenNodes.length === 0) return;
 
-    const contentParent = cachedContentParent || getContentParent(getScrollContainer());
-    if (!contentParent) return;
+    // Restore from the end (most recently hidden = oldest content)
+    const toRestore = hiddenNodes.splice(0, count);
 
-    const insertPoint = placeholder || contentParent.firstChild;
-    const toRestore = removedNodes.splice(-count);
-
-    toRestore.reverse().forEach(data => {
+    toRestore.forEach(data => {
       data.node.classList.remove('claude-leash-hidden');
-      unblockImages(data);
-      if (!data.inDom) {
-        contentParent.insertBefore(data.node, insertPoint);
-      }
-      totalRemovedHeight -= data.height;
+      totalHiddenHeight -= data.height;
     });
 
-    if (removedNodes.length === 0 && placeholder) {
+    if (hiddenNodes.length === 0 && placeholder) {
       placeholder.remove();
       placeholder = null;
     } else {
       updatePlaceholder();
     }
 
-    console.log(`Claude Leash: Restored ${toRestore.length} blocks, ${removedNodes.length} remaining`);
+    console.log(`Claude Leash: Restored ${toRestore.length} blocks, ${hiddenNodes.length} remaining`);
   }
 
   // ============ Badge ============
@@ -568,10 +531,11 @@
 
     const checkScroll = () => {
       const container = getScrollContainer();
-      if (!container || removedNodes.length === 0) return;
+      if (!container || hiddenNodes.length === 0) return;
 
       const scrollTop = container.scrollTop;
 
+      // Restore some content when user scrolls near top
       if (scrollTop < 300 && scrollTop < lastScrollTop) {
         restoreChunk(3);
       }
@@ -600,8 +564,8 @@
     saveSessionState();
 
     // Reset state
-    removedNodes = [];
-    totalRemovedHeight = 0;
+    hiddenNodes = [];
+    totalHiddenHeight = 0;
     placeholder = null;
     cachedContainer = null;
     cachedContentParent = null;
@@ -612,15 +576,13 @@
     const prevState = sessionStates[newSessionId];
     const shouldCollapse = currentSettings.isCollapsed || (prevState && prevState.isCollapsed);
 
-    if (shouldCollapse && isEnabledForCurrentInterface()) {
-      // Apply collapse quickly as content loads
-      [100, 300, 600, 1000, 2000].forEach(delay => {
-        setTimeout(() => {
-          if (currentSettings.isCollapsed) {
-            applyCollapse(currentSettings.maxHeight, true);
-          }
-        }, delay);
-      });
+    if (shouldCollapse && isEnabledForCurrentInterface() && reactHydrated) {
+      // Apply collapse after content loads - wait for React to settle
+      setTimeout(() => {
+        if (currentSettings.isCollapsed) {
+          applyCollapse(currentSettings.maxHeight, true);
+        }
+      }, 500);
     }
   }
 
@@ -671,14 +633,25 @@
           break;
 
         case 'getStatus':
-          const container = getScrollContainer();
-          const totalHeight = container ? container.scrollHeight : 0;
+        case 'reportStatus':
+          // reportStatus is sent by background.js when tab is activated
+          const statusContainer = getScrollContainer();
+          const statusTotalHeight = statusContainer ? Math.round(statusContainer.scrollHeight) : 0;
+          const fullTotal = Math.round(statusTotalHeight + totalHiddenHeight);
+          const visibleNow = Math.round(statusTotalHeight);
+
+          // Update badge
+          updateBadge(visibleNow, fullTotal, currentSettings.isCollapsed);
+
           sendResponse({
             success: true,
-            total: totalHeight + totalRemovedHeight,
-            totalHeight: totalHeight + totalRemovedHeight,
-            removedCount: removedNodes.length,
-            removedHeight: totalRemovedHeight
+            total: fullTotal,
+            totalHeight: fullTotal,
+            visible: visibleNow,
+            visibleHeight: visibleNow,
+            hidden: Math.round(totalHiddenHeight),
+            hiddenHeight: Math.round(totalHiddenHeight),
+            hiddenCount: hiddenNodes.length
           });
           break;
 
@@ -689,8 +662,9 @@
           console.log('Claude Leash DEBUG:');
           console.log('  Interface:', isClaudeCode() ? 'Claude Code Web' : 'Claude.ai');
           console.log('  Session ID:', currentSessionId);
-          console.log('  Removed nodes:', removedNodes.length);
-          console.log('  Removed height:', totalRemovedHeight);
+          console.log('  React hydrated:', reactHydrated);
+          console.log('  Hidden nodes:', hiddenNodes.length);
+          console.log('  Hidden height:', totalHiddenHeight);
           console.log('  Session states:', Object.keys(sessionStates).length);
 
           if (cont) {
@@ -710,9 +684,10 @@
             sendResponse({
               success: true,
               found: getContentChildren(contentParent).length,
-              scrollHeight: cont.scrollHeight,
-              removedCount: removedNodes.length,
-              sessionId: currentSessionId
+              scrollHeight: Math.round(cont.scrollHeight),
+              hiddenCount: hiddenNodes.length,
+              sessionId: currentSessionId,
+              reactHydrated
             });
           } else {
             sendResponse({ success: false, error: 'No container found' });
@@ -740,25 +715,29 @@
     await loadSettings();
     currentSessionId = getSessionId();
 
-    setupImageObserver();
     setupScrollDetection();
     watchUrlChanges();
 
-    // Early collapse if enabled
+    // Wait for React to finish hydrating before manipulating DOM
+    await waitForReactHydration();
+    console.log('Claude Leash: React hydration complete, safe to manipulate DOM');
+
+    // Apply collapse if enabled (after hydration)
     if (currentSettings.isCollapsed && isEnabledForCurrentInterface()) {
-      [200, 500, 1000, 2000].forEach(delay => {
-        setTimeout(() => applyCollapse(currentSettings.maxHeight, true), delay);
-      });
+      // Give React a moment to settle, then apply
+      setTimeout(() => {
+        applyCollapse(currentSettings.maxHeight, true);
+      }, 300);
     }
 
     // Initial badge
     setTimeout(() => {
       const container = getScrollContainer();
-      const totalHeight = container ? container.scrollHeight : 0;
+      const totalHeight = container ? Math.round(container.scrollHeight) : 0;
       updateBadge(totalHeight, totalHeight, currentSettings.isCollapsed);
     }, 500);
   }
 
   init();
-  console.log('Claude Leash: Loaded (early intervention mode)');
+  console.log('Claude Leash: Loaded (waiting for React hydration)');
 })();
