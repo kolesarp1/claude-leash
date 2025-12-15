@@ -1,10 +1,12 @@
 // Claude Leash - Content Script
-// Removes old conversation content and replaces with placeholder for performance
+// Proactive content hiding for snappy performance
 (function() {
   'use strict';
 
   const STORAGE_KEY = 'claudeCollapseSettings';
+  const SESSION_KEY = 'claudeLeashSessions';
   const PLACEHOLDER_ID = 'claude-leash-placeholder';
+  const STYLE_ID = 'claude-leash-styles';
 
   let currentSettings = {
     maxHeight: 12000,
@@ -17,18 +19,65 @@
   let isApplying = false;
   let cachedContainer = null;
   let cachedContentParent = null;
+  let contentObserver = null;
+  let imageObserver = null;
 
   // Storage for removed content
-  let removedNodes = [];        // Array of { node, height, images: [{el, src}] }
+  let removedNodes = [];
   let totalRemovedHeight = 0;
   let placeholder = null;
   let originalTotalHeight = 0;
+
+  // Session tracking
+  let currentSessionId = null;
+  let sessionStates = {};
+
+  // ============ CSS Injection (runs FIRST for instant effect) ============
+
+  function injectStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      /* Placeholder styling */
+      #${PLACEHOLDER_ID} {
+        padding: 16px 20px;
+        margin: 8px 0;
+        background: linear-gradient(135deg, #f5f5f5 0%, #e8e8e8 100%);
+        border-radius: 8px;
+        text-align: center;
+        color: #666;
+        font-size: 13px;
+        cursor: pointer;
+        border: 1px dashed #ccc;
+        transition: background 0.2s, transform 0.1s;
+      }
+      #${PLACEHOLDER_ID}:hover {
+        background: linear-gradient(135deg, #e8e8e8 0%, #ddd 100%);
+        transform: scale(1.005);
+      }
+      /* Lazy image placeholder */
+      img[data-claude-leash-lazy] {
+        background: #f0f0f0;
+        min-height: 50px;
+      }
+      /* Hide content marked for removal (instant, before JS processes) */
+      .claude-leash-hidden {
+        display: none !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  // Inject styles immediately
+  injectStyles();
 
   // ============ Settings ============
 
   async function loadSettings() {
     try {
-      const result = await chrome.storage.local.get(STORAGE_KEY);
+      const result = await chrome.storage.local.get([STORAGE_KEY, SESSION_KEY]);
       if (result[STORAGE_KEY]) {
         if (result[STORAGE_KEY].maxHeight) {
           currentSettings.maxHeight = result[STORAGE_KEY].maxHeight;
@@ -39,7 +88,34 @@
         currentSettings.enableClaudeAi = result[STORAGE_KEY].enableClaudeAi !== false;
         currentSettings.enableClaudeCode = result[STORAGE_KEY].enableClaudeCode !== false;
       }
+      if (result[SESSION_KEY]) {
+        sessionStates = result[SESSION_KEY];
+      }
     } catch (e) {}
+  }
+
+  async function saveSessionState() {
+    if (!currentSessionId) return;
+    sessionStates[currentSessionId] = {
+      isCollapsed: currentSettings.isCollapsed,
+      removedCount: removedNodes.length,
+      timestamp: Date.now()
+    };
+    // Clean old sessions (keep last 50)
+    const keys = Object.keys(sessionStates);
+    if (keys.length > 50) {
+      keys.sort((a, b) => sessionStates[a].timestamp - sessionStates[b].timestamp);
+      keys.slice(0, keys.length - 50).forEach(k => delete sessionStates[k]);
+    }
+    try {
+      await chrome.storage.local.set({ [SESSION_KEY]: sessionStates });
+    } catch (e) {}
+  }
+
+  function getSessionId() {
+    // Extract session ID from URL
+    const match = location.pathname.match(/\/(chat|code)\/([^/?]+)/);
+    return match ? match[2] : location.pathname;
   }
 
   function isClaudeCode() {
@@ -50,11 +126,61 @@
     return isClaudeCode() ? currentSettings.enableClaudeCode : currentSettings.enableClaudeAi;
   }
 
+  // ============ Image Lazy Loading ============
+
+  function setupImageObserver() {
+    if (imageObserver) return;
+
+    imageObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const img = entry.target;
+          if (img.dataset.claudeLeashLazy) {
+            img.src = img.dataset.claudeLeashLazy;
+            delete img.dataset.claudeLeashLazy;
+            img.removeAttribute('data-claude-leash-lazy');
+            imageObserver.unobserve(img);
+          }
+        }
+      });
+    }, { rootMargin: '200px' }); // Start loading 200px before visible
+  }
+
+  function blockImages(node) {
+    const images = [];
+    node.querySelectorAll('img').forEach(img => {
+      if (img.src && !img.src.startsWith('data:') && !img.dataset.claudeLeashLazy) {
+        images.push({ el: img, src: img.src });
+        img.dataset.claudeLeashLazy = img.src;
+        img.dataset.claudeLeashSrc = img.src; // Backup for restore
+        img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+      }
+    });
+    return images;
+  }
+
+  function unblockImages(nodeData) {
+    nodeData.images.forEach(({ el }) => {
+      if (el.dataset.claudeLeashSrc) {
+        el.src = el.dataset.claudeLeashSrc;
+        delete el.dataset.claudeLeashLazy;
+        delete el.dataset.claudeLeashSrc;
+      }
+    });
+  }
+
+  function setupLazyImagesForVisible(contentParent) {
+    if (!contentParent || !imageObserver) return;
+    contentParent.querySelectorAll('img[data-claude-leash-lazy]').forEach(img => {
+      imageObserver.observe(img);
+    });
+  }
+
   // ============ Container Detection ============
 
   function getScrollContainer(forceRefresh = false) {
     if (!forceRefresh && cachedContainer && document.contains(cachedContainer)) {
-      if (cachedContainer.scrollHeight > 1000) {
+      if (cachedContainer.scrollHeight > 500) {
         return cachedContainer;
       }
     }
@@ -66,9 +192,9 @@
     for (const container of containers) {
       const rect = container.getBoundingClientRect();
       if (rect.width < 300 || rect.height < 200) continue;
-      if (rect.left < 150 && rect.width < 400) continue; // Skip sidebar
+      if (rect.left < 150 && rect.width < 400) continue;
 
-      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > 1000) {
+      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > 500) {
         best = container;
         bestScrollHeight = container.scrollHeight;
       }
@@ -78,11 +204,12 @@
     return cachedContainer;
   }
 
-  // Find the content parent (element whose children are the messages)
   function getContentParent(container) {
     if (!container) return null;
+    if (cachedContentParent && document.contains(cachedContentParent)) {
+      return cachedContentParent;
+    }
 
-    // Walk down to find the level with multiple substantial children
     let current = container;
     let bestParent = null;
     let bestChildCount = 0;
@@ -91,8 +218,9 @@
       const children = [...current.children].filter(c => {
         if (c.tagName !== 'DIV') return false;
         if (c.id === PLACEHOLDER_ID) return false;
+        if (c.classList.contains('claude-leash-hidden')) return false;
         const rect = c.getBoundingClientRect();
-        return rect.height > 30 && rect.width > 200;
+        return rect.height > 20 && rect.width > 100;
       });
 
       if (children.length > bestChildCount && children.length >= 2) {
@@ -100,12 +228,11 @@
         bestChildCount = children.length;
       }
 
-      // Continue down the largest child
       const nextChild = [...current.children]
         .filter(c => c.tagName === 'DIV' && c.id !== PLACEHOLDER_ID)
         .sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
 
-      if (nextChild && nextChild.scrollHeight > 200) {
+      if (nextChild && nextChild.scrollHeight > 100) {
         current = nextChild;
       } else {
         break;
@@ -116,14 +243,14 @@
     return bestParent;
   }
 
-  // Get content children (the actual message elements)
   function getContentChildren(contentParent) {
     if (!contentParent) return [];
     return [...contentParent.children].filter(c => {
       if (c.tagName !== 'DIV') return false;
       if (c.id === PLACEHOLDER_ID) return false;
+      if (c.classList.contains('claude-leash-hidden')) return false;
       const rect = c.getBoundingClientRect();
-      return rect.height > 20 && rect.width > 100;
+      return rect.height > 10 && rect.width > 50;
     });
   }
 
@@ -132,18 +259,6 @@
   function createPlaceholder(hiddenHeight, hiddenCount) {
     const el = document.createElement('div');
     el.id = PLACEHOLDER_ID;
-    el.style.cssText = `
-      padding: 16px 20px;
-      margin: 8px 0;
-      background: linear-gradient(135deg, #f0f0f0 0%, #e8e8e8 100%);
-      border-radius: 8px;
-      text-align: center;
-      color: #666;
-      font-size: 13px;
-      cursor: pointer;
-      transition: background 0.2s;
-      border: 1px dashed #ccc;
-    `;
     el.innerHTML = `
       <div style="font-weight: 600; margin-bottom: 4px;">
         📦 ${Math.round(hiddenHeight / 1000)}k pixels hidden (${hiddenCount} blocks)
@@ -153,12 +268,6 @@
       </div>
     `;
     el.addEventListener('click', () => restoreAll());
-    el.addEventListener('mouseenter', () => {
-      el.style.background = 'linear-gradient(135deg, #e8e8e8 0%, #ddd 100%)';
-    });
-    el.addEventListener('mouseleave', () => {
-      el.style.background = 'linear-gradient(135deg, #f0f0f0 0%, #e8e8e8 100%)';
-    });
     return el;
   }
 
@@ -171,27 +280,84 @@
     }
   }
 
-  // ============ Image Handling ============
+  // ============ Early Intervention - Hide as content loads ============
 
-  function unloadImages(node) {
-    const images = [];
-    node.querySelectorAll('img').forEach(img => {
-      if (img.src && !img.src.startsWith('data:')) {
-        images.push({ el: img, src: img.src });
-        img.dataset.claudeLeashSrc = img.src;
-        img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  function setupEarlyIntervention() {
+    if (contentObserver) contentObserver.disconnect();
+
+    contentObserver = new MutationObserver((mutations) => {
+      if (!currentSettings.isCollapsed || !isEnabledForCurrentInterface()) return;
+
+      const contentParent = cachedContentParent;
+      if (!contentParent) return;
+
+      // Check if new children were added
+      let hasNewContent = false;
+      mutations.forEach(mutation => {
+        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+          mutation.addedNodes.forEach(node => {
+            if (node.nodeType === 1 && node.tagName === 'DIV' &&
+                node.id !== PLACEHOLDER_ID && !node.classList.contains('claude-leash-hidden')) {
+              hasNewContent = true;
+              // Immediately block images in new content
+              blockImages(node);
+            }
+          });
+        }
+      });
+
+      if (hasNewContent) {
+        // Quick reapply
+        requestAnimationFrame(() => {
+          applyCollapseQuick();
+        });
       }
     });
-    return images;
+
+    // Observe at body level to catch all changes
+    contentObserver.observe(document.body, { childList: true, subtree: true });
   }
 
-  function reloadImages(nodeData) {
-    nodeData.images.forEach(({ el, src }) => {
-      if (el.dataset.claudeLeashSrc) {
-        el.src = el.dataset.claudeLeashSrc;
-        delete el.dataset.claudeLeashSrc;
+  // Quick collapse without full recalculation
+  function applyCollapseQuick() {
+    if (isApplying) return;
+
+    const contentParent = cachedContentParent || getContentParent(getScrollContainer());
+    if (!contentParent) return;
+
+    const children = getContentChildren(contentParent);
+    if (children.length === 0) return;
+
+    // Quick height calculation
+    let heightFromBottom = 0;
+    const maxHeight = currentSettings.maxHeight;
+
+    for (let i = children.length - 1; i >= 0; i--) {
+      const child = children[i];
+      heightFromBottom += child.offsetHeight || child.getBoundingClientRect().height;
+
+      if (heightFromBottom > maxHeight) {
+        // Hide all remaining (older) content
+        for (let j = 0; j <= i; j++) {
+          const node = children[j];
+          if (!node.classList.contains('claude-leash-hidden')) {
+            const images = blockImages(node);
+            node.classList.add('claude-leash-hidden');
+            removedNodes.push({ node, height: node.offsetHeight, images, inDom: true });
+            totalRemovedHeight += node.offsetHeight;
+          }
+        }
+        break;
       }
-    });
+    }
+
+    // Ensure placeholder exists
+    if (removedNodes.length > 0 && (!placeholder || !placeholder.parentElement)) {
+      placeholder = createPlaceholder(totalRemovedHeight, removedNodes.length);
+      contentParent.insertBefore(placeholder, contentParent.firstChild);
+    } else if (placeholder) {
+      updatePlaceholder();
+    }
   }
 
   // ============ Core Logic ============
@@ -220,6 +386,7 @@
       const total = container ? container.scrollHeight : 0;
       updateBadge(total, total, false);
       isApplying = false;
+      saveSessionState();
       return { success: true, total, hidden: 0, visible: total };
     }
 
@@ -250,7 +417,7 @@
     const totalHeight = heights.reduce((a, b) => a + b, 0);
     originalTotalHeight = Math.max(originalTotalHeight, totalHeight);
 
-    // Calculate what to hide (from top, keeping bottom)
+    // Calculate what to hide
     let heightFromBottom = 0;
     let cutoffIndex = -1;
 
@@ -262,7 +429,7 @@
       }
     }
 
-    // Remove elements above cutoff
+    // Hide elements above cutoff using CSS class (instant) then remove from DOM
     let hiddenHeight = 0;
     const toRemove = [];
 
@@ -270,19 +437,19 @@
       for (let i = 0; i <= cutoffIndex; i++) {
         const node = children[i];
         const height = heights[i];
-        const images = unloadImages(node);
-        toRemove.push({ node, height, images });
+        const images = blockImages(node);
+        toRemove.push({ node, height, images, inDom: false });
         hiddenHeight += height;
       }
 
-      // Remove from DOM and store
+      // Remove from DOM
       toRemove.forEach(data => {
         data.node.remove();
         removedNodes.push(data);
       });
       totalRemovedHeight = hiddenHeight;
 
-      // Add/update placeholder
+      // Add placeholder
       if (!placeholder || !placeholder.parentElement) {
         placeholder = createPlaceholder(hiddenHeight, toRemove.length);
         contentParent.insertBefore(placeholder, contentParent.firstChild);
@@ -293,14 +460,19 @@
       console.log(`Claude Leash: Removed ${toRemove.length} blocks (${Math.round(hiddenHeight/1000)}k px)`);
     }
 
-    // Calculate final values
+    // Setup lazy loading for visible images
+    setupLazyImagesForVisible(contentParent);
+
+    // Setup early intervention for new content
+    setupEarlyIntervention();
+
     const visibleHeight = totalHeight - hiddenHeight;
 
-    // Update badge
     setTimeout(() => {
       updateBadge(visibleHeight, originalTotalHeight, true);
       isApplying = false;
-    }, 100);
+      saveSessionState();
+    }, 50);
 
     return {
       success: true,
@@ -319,6 +491,7 @@
     const container = getScrollContainer();
     const total = container ? container.scrollHeight : 0;
     updateBadge(total, total, currentSettings.isCollapsed);
+    saveSessionState();
   }
 
   function restoreAllSilent() {
@@ -327,27 +500,27 @@
     const contentParent = cachedContentParent || getContentParent(getScrollContainer());
     if (!contentParent) return;
 
-    // Remove placeholder
     if (placeholder && placeholder.parentElement) {
       placeholder.remove();
     }
 
-    // Restore all nodes in order (they were stored oldest first)
     const insertPoint = contentParent.firstChild;
     removedNodes.forEach(data => {
-      reloadImages(data);
-      contentParent.insertBefore(data.node, insertPoint);
+      // Remove hidden class if still in DOM
+      data.node.classList.remove('claude-leash-hidden');
+      unblockImages(data);
+      if (!data.inDom) {
+        contentParent.insertBefore(data.node, insertPoint);
+      }
     });
 
     console.log(`Claude Leash: Restored ${removedNodes.length} blocks`);
 
-    // Clear storage
     removedNodes = [];
     totalRemovedHeight = 0;
     placeholder = null;
   }
 
-  // Restore some content (for scroll-up)
   function restoreChunk(count = 5) {
     if (removedNodes.length === 0) return;
 
@@ -355,11 +528,14 @@
     if (!contentParent) return;
 
     const insertPoint = placeholder || contentParent.firstChild;
-    const toRestore = removedNodes.splice(-count); // Take from end (newest hidden)
+    const toRestore = removedNodes.splice(-count);
 
     toRestore.reverse().forEach(data => {
-      reloadImages(data);
-      contentParent.insertBefore(data.node, insertPoint);
+      data.node.classList.remove('claude-leash-hidden');
+      unblockImages(data);
+      if (!data.inDom) {
+        contentParent.insertBefore(data.node, insertPoint);
+      }
       totalRemovedHeight -= data.height;
     });
 
@@ -388,6 +564,7 @@
 
   function setupScrollDetection() {
     let lastScrollTop = 0;
+    let scrollThrottle = null;
 
     const checkScroll = () => {
       const container = getScrollContainer();
@@ -395,70 +572,86 @@
 
       const scrollTop = container.scrollTop;
 
-      // If user scrolled up to near the top (within 200px), restore some content
-      if (scrollTop < 200 && scrollTop < lastScrollTop) {
+      if (scrollTop < 300 && scrollTop < lastScrollTop) {
         restoreChunk(3);
       }
 
       lastScrollTop = scrollTop;
     };
 
-    // Debounced scroll handler
-    let scrollTimer = null;
     document.addEventListener('scroll', () => {
-      clearTimeout(scrollTimer);
-      scrollTimer = setTimeout(checkScroll, 150);
+      if (scrollThrottle) return;
+      scrollThrottle = setTimeout(() => {
+        scrollThrottle = null;
+        checkScroll();
+      }, 100);
     }, true);
   }
 
-  // ============ Watchers ============
+  // ============ Session/URL Change Detection ============
+
+  function handleSessionChange() {
+    const newSessionId = getSessionId();
+    if (newSessionId === currentSessionId) return;
+
+    console.log(`Claude Leash: Session change ${currentSessionId} -> ${newSessionId}`);
+
+    // Save current session state
+    saveSessionState();
+
+    // Reset state
+    removedNodes = [];
+    totalRemovedHeight = 0;
+    placeholder = null;
+    cachedContainer = null;
+    cachedContentParent = null;
+    originalTotalHeight = 0;
+    currentSessionId = newSessionId;
+
+    // Check if we should auto-collapse this session
+    const prevState = sessionStates[newSessionId];
+    const shouldCollapse = currentSettings.isCollapsed || (prevState && prevState.isCollapsed);
+
+    if (shouldCollapse && isEnabledForCurrentInterface()) {
+      // Apply collapse quickly as content loads
+      [100, 300, 600, 1000, 2000].forEach(delay => {
+        setTimeout(() => {
+          if (currentSettings.isCollapsed) {
+            applyCollapse(currentSettings.maxHeight, true);
+          }
+        }, delay);
+      });
+    }
+  }
 
   function watchUrlChanges() {
+    // Multiple detection methods for reliability
+
+    // 1. Polling (fallback)
     setInterval(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        // Full reset on URL change
-        removedNodes = [];
-        totalRemovedHeight = 0;
-        placeholder = null;
-        cachedContainer = null;
-        cachedContentParent = null;
-        originalTotalHeight = 0;
-
-        // Reapply after content loads
-        [500, 1500, 3000].forEach(delay => {
-          setTimeout(() => {
-            if (currentSettings.isCollapsed) {
-              applyCollapse(currentSettings.maxHeight, true);
-            }
-          }, delay);
-        });
+        handleSessionChange();
       }
-    }, 500);
-  }
+    }, 300);
 
-  function watchNewContent() {
-    let debounceTimer = null;
-    let lastChildCount = 0;
+    // 2. History API
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
 
-    const observer = new MutationObserver(() => {
-      // Only react if we're collapsed and content might have grown
-      if (!currentSettings.isCollapsed) return;
+    history.pushState = function(...args) {
+      originalPushState.apply(this, args);
+      setTimeout(handleSessionChange, 50);
+    };
 
-      const contentParent = cachedContentParent || getContentParent(getScrollContainer());
-      if (!contentParent) return;
+    history.replaceState = function(...args) {
+      originalReplaceState.apply(this, args);
+      setTimeout(handleSessionChange, 50);
+    };
 
-      const currentCount = getContentChildren(contentParent).length;
-      if (currentCount === lastChildCount) return;
-      lastChildCount = currentCount;
-
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        applyCollapse(currentSettings.maxHeight, true);
-      }, 1000);
+    window.addEventListener('popstate', () => {
+      setTimeout(handleSessionChange, 50);
     });
-
-    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   // ============ Message Handler ============
@@ -495,46 +688,33 @@
           const cont = getScrollContainer(true);
           console.log('Claude Leash DEBUG:');
           console.log('  Interface:', isClaudeCode() ? 'Claude Code Web' : 'Claude.ai');
+          console.log('  Session ID:', currentSessionId);
           console.log('  Removed nodes:', removedNodes.length);
           console.log('  Removed height:', totalRemovedHeight);
+          console.log('  Session states:', Object.keys(sessionStates).length);
 
           if (cont) {
-            const contRect = cont.getBoundingClientRect();
-            console.log('  Container:', {
-              scrollHeight: cont.scrollHeight,
-              clientHeight: cont.clientHeight,
-              left: Math.round(contRect.left),
-              width: Math.round(contRect.width)
-            });
-
             cont.style.outline = '3px solid red';
             const contentParent = getContentParent(cont);
             if (contentParent) {
               contentParent.style.outline = '3px solid orange';
               const children = getContentChildren(contentParent);
-              console.log('  Content parent children:', children.length);
-
-              children.slice(0, 5).forEach((el, i) => {
-                const rect = el.getBoundingClientRect();
-                console.log(`    [${i}] h=${Math.round(rect.height)}px`);
-                el.style.outline = `2px solid ${i % 2 === 0 ? 'blue' : 'green'}`;
-              });
+              console.log('  Content children:', children.length);
 
               setTimeout(() => {
                 cont.style.outline = '';
                 contentParent.style.outline = '';
-                children.forEach(el => el.style.outline = '');
-              }, 5000);
+              }, 3000);
             }
 
             sendResponse({
               success: true,
               found: getContentChildren(contentParent).length,
               scrollHeight: cont.scrollHeight,
-              removedCount: removedNodes.length
+              removedCount: removedNodes.length,
+              sessionId: currentSessionId
             });
           } else {
-            console.log('  No container found!');
             sendResponse({ success: false, error: 'No container found' });
           }
           break;
@@ -558,18 +738,27 @@
 
   async function init() {
     await loadSettings();
-    watchUrlChanges();
-    watchNewContent();
-    setupScrollDetection();
+    currentSessionId = getSessionId();
 
-    // Initial badge update
+    setupImageObserver();
+    setupScrollDetection();
+    watchUrlChanges();
+
+    // Early collapse if enabled
+    if (currentSettings.isCollapsed && isEnabledForCurrentInterface()) {
+      [200, 500, 1000, 2000].forEach(delay => {
+        setTimeout(() => applyCollapse(currentSettings.maxHeight, true), delay);
+      });
+    }
+
+    // Initial badge
     setTimeout(() => {
       const container = getScrollContainer();
       const totalHeight = container ? container.scrollHeight : 0;
       updateBadge(totalHeight, totalHeight, currentSettings.isCollapsed);
-    }, 1000);
+    }, 500);
   }
 
   init();
-  console.log('Claude Leash: Loaded (placeholder mode)');
+  console.log('Claude Leash: Loaded (early intervention mode)');
 })();
