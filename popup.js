@@ -9,7 +9,7 @@
   let isCollapsed = false;
   let maxHeight = 12000; // pixels
   let scale = 1;
-  let enableClaudeAi = true;
+  let enableClaudeAi = false;
   let enableClaudeCode = true;
   let currentTheme = 'light';
 
@@ -93,9 +93,9 @@
         }
         scale = result[STORAGE_KEY].scale || 1;
         isCollapsed = result[STORAGE_KEY].isCollapsed || false;
-        // Interface toggles - default to true if not set
-        enableClaudeAi = result[STORAGE_KEY].enableClaudeAi !== false;
+        // Interface toggles - Claude Code ON by default, Claude.ai OFF by default
         enableClaudeCode = result[STORAGE_KEY].enableClaudeCode !== false;
+        enableClaudeAi = result[STORAGE_KEY].enableClaudeAi === true;
       }
       sliderEl.value = maxHeight;
       sliderValueEl.textContent = formatPixels(maxHeight);

@@ -46,7 +46,7 @@
   let currentSettings = {
     maxHeight: 12000,
     isCollapsed: false,
-    enableClaudeAi: true,
+    enableClaudeAi: false,
     enableClaudeCode: true
   };
 
@@ -122,8 +122,9 @@
           currentSettings.maxHeight = result[STORAGE_KEY].maxLines * 24;
         }
         currentSettings.isCollapsed = result[STORAGE_KEY].isCollapsed || false;
-        currentSettings.enableClaudeAi = result[STORAGE_KEY].enableClaudeAi !== false;
+        // Claude Code ON by default, Claude.ai OFF by default
         currentSettings.enableClaudeCode = result[STORAGE_KEY].enableClaudeCode !== false;
+        currentSettings.enableClaudeAi = result[STORAGE_KEY].enableClaudeAi === true;
       }
     } catch (e) {
       debugLog('Failed to load settings:', e.message);
