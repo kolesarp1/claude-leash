@@ -1,13 +1,48 @@
-// Claude Leash - Content Script
+// Claude Leash - Content Script v3.4.0
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
 
+  // ============ Constants ============
   const STORAGE_KEY = 'claudeCollapseSettings';
   const SESSION_KEY = 'claudeLeashSessions';
   const PLACEHOLDER_ID = 'claude-leash-placeholder';
   const STYLE_ID = 'claude-leash-styles';
 
+  // Timing constants
+  const POLLING_INTERVAL_MS = 300;
+  const CONTENT_CHECK_INTERVAL_MS = 200;
+  const MAX_CONTENT_ATTEMPTS = 40;
+  const STABLE_THRESHOLD = 3;
+  const SESSION_CHANGE_DELAY_MS = 50;
+
+  // Size constants
+  const MIN_SCROLL_HEIGHT = 500;
+  const MIN_HEIGHT_FOR_COLLAPSE = 5000;
+  const MIN_BLOCKS_FOR_COLLAPSE = 10;
+  const MIN_CONTAINER_WIDTH = 300;
+  const MIN_CONTAINER_HEIGHT = 200;
+  const SIDEBAR_MAX_LEFT = 150;
+  const SIDEBAR_MAX_WIDTH = 400;
+  const MIN_CHILD_HEIGHT = 20;
+  const MIN_CHILD_WIDTH = 100;
+  const SCROLL_RESTORE_THRESHOLD = 300;
+
+  // Detection constants
+  const MAX_CONTENT_DEPTH = 15;
+  const MAX_SESSIONS_STORED = 50;
+  const CACHE_MATCH_THRESHOLD = 0.7; // 70% match for fast path
+
+  // Debug mode (set to true to enable verbose logging)
+  const DEBUG_MODE = false;
+
+  function debugLog(...args) {
+    if (DEBUG_MODE) {
+      console.log('Claude Leash DEBUG:', ...args);
+    }
+  }
+
+  // ============ State ============
   let currentSettings = {
     maxHeight: 12000,
     isCollapsed: false,
@@ -20,8 +55,7 @@
   let cachedContainer = null;
   let cachedContentParent = null;
   let contentObserver = null;
-  let imageObserver = null;
-  let reactHydrated = false; // Track if React has finished hydrating
+  let reactHydrated = false;
 
   // Storage for hidden content (CSS-only, no DOM removal to avoid React conflicts)
   let hiddenNodes = [];
@@ -31,7 +65,14 @@
 
   // Session tracking
   let currentSessionId = null;
-  let sessionStates = {};
+  let sessionContentCache = new Map(); // In-memory cache: sessionId -> {blockCount, scrollHeight, timestamp}
+
+  // AbortController for cancelling pending operations on session switch
+  let currentAbortController = null;
+
+  // Track if History API hooks are working (to disable polling)
+  let historyApiTriggered = false;
+  let pollingIntervalId = null;
 
   // ============ CSS Injection (runs FIRST for instant effect) ============
 
@@ -58,11 +99,6 @@
         background: linear-gradient(135deg, #e8e8e8 0%, #ddd 100%);
         transform: scale(1.005);
       }
-      /* Lazy image placeholder */
-      img[data-claude-leash-lazy] {
-        background: #f0f0f0;
-        min-height: 50px;
-      }
       /* Hide content marked for removal (instant, before JS processes) */
       .claude-leash-hidden {
         display: none !important;
@@ -78,7 +114,7 @@
 
   async function loadSettings() {
     try {
-      const result = await chrome.storage.local.get([STORAGE_KEY, SESSION_KEY]);
+      const result = await chrome.storage.local.get([STORAGE_KEY]);
       if (result[STORAGE_KEY]) {
         if (result[STORAGE_KEY].maxHeight) {
           currentSettings.maxHeight = result[STORAGE_KEY].maxHeight;
@@ -89,28 +125,46 @@
         currentSettings.enableClaudeAi = result[STORAGE_KEY].enableClaudeAi !== false;
         currentSettings.enableClaudeCode = result[STORAGE_KEY].enableClaudeCode !== false;
       }
-      if (result[SESSION_KEY]) {
-        sessionStates = result[SESSION_KEY];
-      }
-    } catch (e) {}
+    } catch (e) {
+      debugLog('Failed to load settings:', e.message);
+    }
   }
 
   async function saveSessionState() {
     if (!currentSessionId) return;
-    sessionStates[currentSessionId] = {
-      isCollapsed: currentSettings.isCollapsed,
-      hiddenCount: hiddenNodes.length,
-      timestamp: Date.now()
-    };
-    // Clean old sessions (keep last 50)
-    const keys = Object.keys(sessionStates);
-    if (keys.length > 50) {
-      keys.sort((a, b) => sessionStates[a].timestamp - sessionStates[b].timestamp);
-      keys.slice(0, keys.length - 50).forEach(k => delete sessionStates[k]);
-    }
+
     try {
-      await chrome.storage.local.set({ [SESSION_KEY]: sessionStates });
-    } catch (e) {}
+      // Always read fresh from storage first (prevents multi-tab race condition)
+      const result = await chrome.storage.local.get(SESSION_KEY);
+      const freshStates = result[SESSION_KEY] || {};
+
+      freshStates[currentSessionId] = {
+        isCollapsed: currentSettings.isCollapsed,
+        hiddenCount: hiddenNodes.length,
+        timestamp: Date.now()
+      };
+
+      // Clean old sessions (keep last MAX_SESSIONS_STORED)
+      const keys = Object.keys(freshStates);
+      if (keys.length > MAX_SESSIONS_STORED) {
+        keys.sort((a, b) => freshStates[a].timestamp - freshStates[b].timestamp);
+        keys.slice(0, keys.length - MAX_SESSIONS_STORED).forEach(k => delete freshStates[k]);
+      }
+
+      await chrome.storage.local.set({ [SESSION_KEY]: freshStates });
+    } catch (e) {
+      debugLog('Failed to save session state:', e.message);
+    }
+  }
+
+  async function loadSessionStates() {
+    try {
+      const result = await chrome.storage.local.get(SESSION_KEY);
+      return result[SESSION_KEY] || {};
+    } catch (e) {
+      debugLog('Failed to load session states:', e.message);
+      return {};
+    }
   }
 
   function getSessionId() {
@@ -131,20 +185,17 @@
 
   function waitForReactHydration() {
     return new Promise(resolve => {
-      // Wait for React to finish hydrating - use multiple signals
       if (reactHydrated) {
         resolve();
         return;
       }
 
-      // Method 1: requestIdleCallback (browser is idle)
       if (window.requestIdleCallback) {
         window.requestIdleCallback(() => {
           reactHydrated = true;
           resolve();
         }, { timeout: 3000 });
       } else {
-        // Method 2: Fallback timeout
         setTimeout(() => {
           reactHydrated = true;
           resolve();
@@ -153,30 +204,34 @@
     });
   }
 
-  // ============ Safe Image Handling (no src modification to avoid React conflicts) ============
-
-  // Instead of modifying img.src, we just track which nodes are hidden
-  // The CSS .claude-leash-hidden will hide them including their images
-
-  // ============ Container Detection ============
+  // ============ Container Detection (behavior-based) ============
 
   function getScrollContainer(forceRefresh = false) {
     if (!forceRefresh && cachedContainer && document.contains(cachedContainer)) {
-      if (cachedContainer.scrollHeight > 500) {
+      if (cachedContainer.scrollHeight > MIN_SCROLL_HEIGHT) {
         return cachedContainer;
       }
     }
 
-    const containers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"]');
+    // Behavior-based detection: find elements with overflow-y: auto or scroll
+    const allDivs = document.querySelectorAll('div');
     let best = null;
     let bestScrollHeight = 0;
 
-    for (const container of containers) {
-      const rect = container.getBoundingClientRect();
-      if (rect.width < 300 || rect.height < 200) continue;
-      if (rect.left < 150 && rect.width < 400) continue;
+    for (const container of allDivs) {
+      const style = getComputedStyle(container);
+      const overflowY = style.overflowY;
 
-      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > 500) {
+      // Check if this element has scrollable overflow
+      if (overflowY !== 'auto' && overflowY !== 'scroll') continue;
+
+      const rect = container.getBoundingClientRect();
+      if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) continue;
+
+      // Skip sidebar elements
+      if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) continue;
+
+      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > MIN_SCROLL_HEIGHT) {
         best = container;
         bestScrollHeight = container.scrollHeight;
       }
@@ -196,13 +251,13 @@
     let bestParent = null;
     let bestChildCount = 0;
 
-    for (let depth = 0; depth < 15; depth++) {
+    for (let depth = 0; depth < MAX_CONTENT_DEPTH; depth++) {
       const children = [...current.children].filter(c => {
         if (c.tagName !== 'DIV') return false;
         if (c.id === PLACEHOLDER_ID) return false;
         if (c.classList.contains('claude-leash-hidden')) return false;
         const rect = c.getBoundingClientRect();
-        return rect.height > 20 && rect.width > 100;
+        return rect.height > MIN_CHILD_HEIGHT && rect.width > MIN_CHILD_WIDTH;
       });
 
       if (children.length > bestChildCount && children.length >= 2) {
@@ -244,10 +299,10 @@
     const heightK = Math.round(hiddenHeight / 1000);
     el.innerHTML = `
       <div style="font-weight: 600; margin-bottom: 4px;">
-        📦 ${heightK}k pixels hidden (${hiddenCount} blocks)
+        ${heightK}k pixels hidden (${hiddenCount} blocks)
       </div>
       <div style="font-size: 11px; opacity: 0.8;">
-        Click to restore • Scroll up to load more
+        Click to restore
       </div>
     `;
     el.addEventListener('click', () => restoreAll());
@@ -259,7 +314,7 @@
       const countEl = placeholder.querySelector('div');
       if (countEl) {
         const heightK = Math.round(totalHiddenHeight / 1000);
-        countEl.innerHTML = `📦 ${heightK}k pixels hidden (${hiddenNodes.length} blocks)`;
+        countEl.innerHTML = `${heightK}k pixels hidden (${hiddenNodes.length} blocks)`;
       }
     }
   }
@@ -267,19 +322,17 @@
   // ============ Early Intervention - Hide as content loads ============
 
   function setupEarlyIntervention() {
-    // Only run after React has hydrated to avoid conflicts
     if (!reactHydrated) return;
 
     if (contentObserver) contentObserver.disconnect();
 
     contentObserver = new MutationObserver((mutations) => {
       if (!currentSettings.isCollapsed || !isEnabledForCurrentInterface()) return;
-      if (!reactHydrated) return; // Safety check
+      if (!reactHydrated) return;
 
       const contentParent = cachedContentParent;
       if (!contentParent) return;
 
-      // Check if new children were added
       let hasNewContent = false;
       mutations.forEach(mutation => {
         if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
@@ -293,57 +346,57 @@
       });
 
       if (hasNewContent) {
-        // Quick reapply after a small delay
         requestAnimationFrame(() => {
           applyCollapseQuick();
         });
       }
     });
 
-    // Observe at body level to catch all changes
     contentObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   // Quick collapse without full recalculation - CSS only, no DOM removal
   function applyCollapseQuick() {
     if (isApplying || !reactHydrated) return;
+    isApplying = true; // Fix: set flag at start to prevent concurrent calls
 
-    const contentParent = cachedContentParent || getContentParent(getScrollContainer());
-    if (!contentParent) return;
+    try {
+      const contentParent = cachedContentParent || getContentParent(getScrollContainer());
+      if (!contentParent) return;
 
-    const children = getContentChildren(contentParent);
-    if (children.length === 0) return;
+      const children = getContentChildren(contentParent);
+      if (children.length === 0) return;
 
-    // Quick height calculation
-    let heightFromBottom = 0;
-    const maxHeight = currentSettings.maxHeight;
+      let heightFromBottom = 0;
+      const maxHeight = currentSettings.maxHeight;
 
-    for (let i = children.length - 1; i >= 0; i--) {
-      const child = children[i];
-      const height = Math.round(child.offsetHeight || child.getBoundingClientRect().height);
-      heightFromBottom += height;
+      for (let i = children.length - 1; i >= 0; i--) {
+        const child = children[i];
+        const height = Math.round(child.offsetHeight || child.getBoundingClientRect().height);
+        heightFromBottom += height;
 
-      if (heightFromBottom > maxHeight) {
-        // Hide all remaining (older) content using CSS class only
-        for (let j = 0; j <= i; j++) {
-          const node = children[j];
-          if (!node.classList.contains('claude-leash-hidden')) {
-            const nodeHeight = Math.round(node.offsetHeight);
-            node.classList.add('claude-leash-hidden');
-            hiddenNodes.push({ node, height: nodeHeight });
-            totalHiddenHeight += nodeHeight;
+        if (heightFromBottom > maxHeight) {
+          for (let j = 0; j <= i; j++) {
+            const node = children[j];
+            if (!node.classList.contains('claude-leash-hidden')) {
+              const nodeHeight = Math.round(node.offsetHeight);
+              node.classList.add('claude-leash-hidden');
+              hiddenNodes.push({ node, height: nodeHeight });
+              totalHiddenHeight += nodeHeight;
+            }
           }
+          break;
         }
-        break;
       }
-    }
 
-    // Ensure placeholder exists
-    if (hiddenNodes.length > 0 && (!placeholder || !placeholder.parentElement)) {
-      placeholder = createPlaceholder(totalHiddenHeight, hiddenNodes.length);
-      contentParent.insertBefore(placeholder, contentParent.firstChild);
-    } else if (placeholder) {
-      updatePlaceholder();
+      if (hiddenNodes.length > 0 && (!placeholder || !placeholder.parentElement)) {
+        placeholder = createPlaceholder(totalHiddenHeight, hiddenNodes.length);
+        contentParent.insertBefore(placeholder, contentParent.firstChild);
+      } else if (placeholder) {
+        updatePlaceholder();
+      }
+    } finally {
+      isApplying = false; // Always reset flag
     }
   }
 
@@ -353,115 +406,110 @@
     if (isApplying) return { success: true };
     isApplying = true;
 
-    // Update settings
-    currentSettings.maxHeight = maxHeight;
-    currentSettings.isCollapsed = isCollapsed;
-    if (enableClaudeAi !== undefined) currentSettings.enableClaudeAi = enableClaudeAi;
-    if (enableClaudeCode !== undefined) currentSettings.enableClaudeCode = enableClaudeCode;
+    try {
+      currentSettings.maxHeight = maxHeight;
+      currentSettings.isCollapsed = isCollapsed;
+      if (enableClaudeAi !== undefined) currentSettings.enableClaudeAi = enableClaudeAi;
+      if (enableClaudeCode !== undefined) currentSettings.enableClaudeCode = enableClaudeCode;
 
-    // Check if enabled
-    if (!isEnabledForCurrentInterface()) {
-      restoreAll();
-      isApplying = false;
-      return { success: true, disabled: true, total: 0, hidden: 0, visible: 0 };
-    }
+      if (!isEnabledForCurrentInterface()) {
+        restoreAll();
+        return { success: true, disabled: true, total: 0, hidden: 0, visible: 0 };
+      }
 
-    // If not collapsed, restore everything
-    if (!isCollapsed) {
-      restoreAll();
+      if (!isCollapsed) {
+        restoreAll();
+        const container = getScrollContainer();
+        const total = container ? Math.round(container.scrollHeight) : 0;
+        updateBadge(total, total, false);
+        saveSessionState();
+        return { success: true, total, hidden: 0, visible: total };
+      }
+
       const container = getScrollContainer();
-      const total = container ? Math.round(container.scrollHeight) : 0;
-      updateBadge(total, total, false);
-      isApplying = false;
-      saveSessionState();
-      return { success: true, total, hidden: 0, visible: total };
-    }
-
-    // Get container and content
-    const container = getScrollContainer();
-    if (!container) {
-      isApplying = false;
-      return { success: false, error: 'No scroll container found' };
-    }
-
-    const contentParent = getContentParent(container);
-    if (!contentParent) {
-      isApplying = false;
-      return { success: false, error: 'No content parent found' };
-    }
-
-    // First restore all to measure accurately
-    restoreAllSilent();
-
-    const children = getContentChildren(contentParent);
-    if (children.length === 0) {
-      isApplying = false;
-      return { success: false, error: 'No content children found' };
-    }
-
-    // Measure heights (round to avoid float display issues)
-    const heights = children.map(el => Math.round(el.getBoundingClientRect().height));
-    const totalHeight = heights.reduce((a, b) => a + b, 0);
-    originalTotalHeight = Math.max(originalTotalHeight, totalHeight);
-
-    // Calculate what to hide
-    let heightFromBottom = 0;
-    let cutoffIndex = -1;
-
-    for (let i = children.length - 1; i >= 0; i--) {
-      heightFromBottom += heights[i];
-      if (heightFromBottom > maxHeight) {
-        cutoffIndex = i;
-        break;
-      }
-    }
-
-    // Hide elements above cutoff using CSS class only (no DOM removal to avoid React issues)
-    let hiddenHeight = 0;
-
-    if (cutoffIndex >= 0) {
-      for (let i = 0; i <= cutoffIndex; i++) {
-        const node = children[i];
-        const height = heights[i];
-        node.classList.add('claude-leash-hidden');
-        hiddenNodes.push({ node, height });
-        hiddenHeight += height;
+      if (!container) {
+        return { success: false, error: 'No scroll container found' };
       }
 
-      totalHiddenHeight = hiddenHeight;
-
-      // Add placeholder
-      if (!placeholder || !placeholder.parentElement) {
-        placeholder = createPlaceholder(hiddenHeight, hiddenNodes.length);
-        contentParent.insertBefore(placeholder, contentParent.firstChild);
-      } else {
-        updatePlaceholder();
+      const contentParent = getContentParent(container);
+      if (!contentParent) {
+        return { success: false, error: 'No content parent found' };
       }
 
-      console.log(`Claude Leash: Hidden ${hiddenNodes.length} blocks (${Math.round(hiddenHeight/1000)}k px)`);
-    }
+      restoreAllSilent();
 
-    // Setup early intervention for new content
-    setupEarlyIntervention();
+      const children = getContentChildren(contentParent);
+      if (children.length === 0) {
+        return { success: false, error: 'No content children found' };
+      }
 
-    const visibleHeight = totalHeight - hiddenHeight;
+      const heights = children.map(el => Math.round(el.getBoundingClientRect().height));
+      const totalHeight = heights.reduce((a, b) => a + b, 0);
+      originalTotalHeight = Math.max(originalTotalHeight, totalHeight);
 
-    setTimeout(() => {
-      updateBadge(Math.round(visibleHeight), Math.round(originalTotalHeight), true);
+      let heightFromBottom = 0;
+      let cutoffIndex = -1;
+
+      for (let i = children.length - 1; i >= 0; i--) {
+        heightFromBottom += heights[i];
+        if (heightFromBottom > maxHeight) {
+          cutoffIndex = i;
+          break;
+        }
+      }
+
+      let hiddenHeight = 0;
+
+      if (cutoffIndex >= 0) {
+        for (let i = 0; i <= cutoffIndex; i++) {
+          const node = children[i];
+          const height = heights[i];
+          node.classList.add('claude-leash-hidden');
+          hiddenNodes.push({ node, height });
+          hiddenHeight += height;
+        }
+
+        totalHiddenHeight = hiddenHeight;
+
+        if (!placeholder || !placeholder.parentElement) {
+          placeholder = createPlaceholder(hiddenHeight, hiddenNodes.length);
+          contentParent.insertBefore(placeholder, contentParent.firstChild);
+        } else {
+          updatePlaceholder();
+        }
+
+        console.log(`Claude Leash: Hidden ${hiddenNodes.length} blocks (${Math.round(hiddenHeight/1000)}k px)`);
+      }
+
+      // Update content cache
+      sessionContentCache.set(currentSessionId, {
+        blockCount: children.length,
+        scrollHeight: container.scrollHeight,
+        timestamp: Date.now()
+      });
+
+      setupEarlyIntervention();
+
+      const visibleHeight = totalHeight - hiddenHeight;
+
+      setTimeout(() => {
+        updateBadge(Math.round(visibleHeight), Math.round(originalTotalHeight), true);
+        saveSessionState();
+      }, 50);
+
+      return {
+        success: true,
+        totalHeight: Math.round(originalTotalHeight),
+        hiddenHeight: Math.round(hiddenHeight),
+        visibleHeight: Math.round(visibleHeight),
+        total: Math.round(originalTotalHeight),
+        hidden: Math.round(hiddenHeight),
+        visible: Math.round(visibleHeight),
+        hiddenCount: hiddenNodes.length
+      };
+    } finally {
       isApplying = false;
-      saveSessionState();
-    }, 50);
-
-    return {
-      success: true,
-      totalHeight: Math.round(originalTotalHeight),
-      hiddenHeight: Math.round(hiddenHeight),
-      visibleHeight: Math.round(visibleHeight),
-      total: Math.round(originalTotalHeight),
-      hidden: Math.round(hiddenHeight),
-      visible: Math.round(visibleHeight),
-      hiddenCount: hiddenNodes.length
-    };
+    }
   }
 
   function restoreAll() {
@@ -479,7 +527,6 @@
       placeholder.remove();
     }
 
-    // Just remove the CSS class - nodes are still in DOM
     hiddenNodes.forEach(data => {
       data.node.classList.remove('claude-leash-hidden');
     });
@@ -494,7 +541,6 @@
   function restoreChunk(count = 5) {
     if (hiddenNodes.length === 0) return;
 
-    // Restore from the end (most recently hidden = oldest content)
     const toRestore = hiddenNodes.splice(0, count);
 
     toRestore.forEach(data => {
@@ -509,7 +555,7 @@
       updatePlaceholder();
     }
 
-    console.log(`Claude Leash: Restored ${toRestore.length} blocks, ${hiddenNodes.length} remaining`);
+    debugLog(`Restored ${toRestore.length} blocks, ${hiddenNodes.length} remaining`);
   }
 
   // ============ Badge ============
@@ -535,8 +581,7 @@
 
       const scrollTop = container.scrollTop;
 
-      // Restore some content when user scrolls near top
-      if (scrollTop < 300 && scrollTop < lastScrollTop) {
+      if (scrollTop < SCROLL_RESTORE_THRESHOLD && scrollTop < lastScrollTop) {
         restoreChunk(3);
       }
 
@@ -554,11 +599,19 @@
 
   // ============ Session/URL Change Detection ============
 
-  function handleSessionChange() {
+  async function handleSessionChange() {
     const newSessionId = getSessionId();
     if (newSessionId === currentSessionId) return;
 
     console.log(`Claude Leash: Session change ${currentSessionId} -> ${newSessionId}`);
+
+    // Cancel any pending detection from previous session
+    if (currentAbortController) {
+      currentAbortController.abort();
+      debugLog('Aborted previous session detection');
+    }
+    currentAbortController = new AbortController();
+    const signal = currentAbortController.signal;
 
     // Save current session state
     saveSessionState();
@@ -572,47 +625,170 @@
     originalTotalHeight = 0;
     currentSessionId = newSessionId;
 
-    // Check if we should auto-collapse this session
+    // Load session states from storage
+    const sessionStates = await loadSessionStates();
     const prevState = sessionStates[newSessionId];
     const shouldCollapse = currentSettings.isCollapsed || (prevState && prevState.isCollapsed);
 
-    if (shouldCollapse && isEnabledForCurrentInterface() && reactHydrated) {
-      // Wait for content to load, then apply collapse
-      waitForContent().then(() => {
-        if (currentSettings.isCollapsed) {
+    if (!shouldCollapse || !isEnabledForCurrentInterface() || !reactHydrated) {
+      return;
+    }
+
+    // Check content cache for fast path
+    const cachedContent = sessionContentCache.get(newSessionId);
+
+    if (cachedContent) {
+      // Fast path: we have cached content info for this session
+      debugLog(`Fast path: cached content for session ${newSessionId}`, cachedContent);
+
+      // Wait a short time for DOM to update
+      await sleep(100);
+      if (signal.aborted) return;
+
+      // Check if current content matches cache (within threshold)
+      const container = getScrollContainer(true);
+      if (container) {
+        const currentHeight = container.scrollHeight;
+        const heightMatch = currentHeight / cachedContent.scrollHeight;
+
+        if (heightMatch >= CACHE_MATCH_THRESHOLD && heightMatch <= (1 / CACHE_MATCH_THRESHOLD)) {
+          // Content matches cache - apply collapse immediately
+          debugLog(`Cache hit! Height match: ${(heightMatch * 100).toFixed(0)}%`);
           applyCollapse(currentSettings.maxHeight, true);
+          return;
         }
-      });
+      }
+    }
+
+    // Slow path: wait for content to load and stabilize
+    try {
+      await waitForContent(signal);
+      if (signal.aborted) return;
+
+      if (currentSettings.isCollapsed) {
+        applyCollapse(currentSettings.maxHeight, true);
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        debugLog('Content detection aborted');
+      } else {
+        debugLog('Error during content detection:', e.message);
+      }
     }
   }
 
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   function watchUrlChanges() {
-    // Multiple detection methods for reliability
-
-    // 1. Polling (fallback)
-    setInterval(() => {
-      if (location.href !== lastUrl) {
-        lastUrl = location.href;
-        handleSessionChange();
-      }
-    }, 300);
-
-    // 2. History API
+    // 1. History API hooks (preferred - more responsive)
     const originalPushState = history.pushState;
     const originalReplaceState = history.replaceState;
 
     history.pushState = function(...args) {
       originalPushState.apply(this, args);
-      setTimeout(handleSessionChange, 50);
+      historyApiTriggered = true;
+      setTimeout(handleSessionChange, SESSION_CHANGE_DELAY_MS);
     };
 
     history.replaceState = function(...args) {
       originalReplaceState.apply(this, args);
-      setTimeout(handleSessionChange, 50);
+      historyApiTriggered = true;
+      setTimeout(handleSessionChange, SESSION_CHANGE_DELAY_MS);
     };
 
     window.addEventListener('popstate', () => {
-      setTimeout(handleSessionChange, 50);
+      historyApiTriggered = true;
+      setTimeout(handleSessionChange, SESSION_CHANGE_DELAY_MS);
+    });
+
+    // 2. Polling fallback (only if History API doesn't trigger)
+    pollingIntervalId = setInterval(() => {
+      // If History API has been working, we can rely less on polling
+      // But keep it as a safety net
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        if (!historyApiTriggered) {
+          // Only handle if History API didn't already catch it
+          handleSessionChange();
+        }
+        historyApiTriggered = false; // Reset for next change
+      }
+    }, POLLING_INTERVAL_MS);
+  }
+
+  // ============ Wait for Content ============
+
+  function waitForContent(signal) {
+    return new Promise((resolve, reject) => {
+      let attempts = 0;
+      let lastScrollHeight = 0;
+      let stableCount = 0;
+
+      const checkContent = () => {
+        // Check if aborted
+        if (signal && signal.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+
+        attempts++;
+
+        // Clear caches to ensure fresh detection each time
+        cachedContainer = null;
+        cachedContentParent = null;
+
+        const container = getScrollContainer(true);
+
+        if (container) {
+          const currentHeight = container.scrollHeight;
+          const contentParent = getContentParent(container);
+          const children = contentParent ? getContentChildren(contentParent) : [];
+
+          if (attempts % 5 === 0) {
+            debugLog(`Checking content... (${children.length} blocks, ${Math.round(currentHeight/1000)}k px, attempt ${attempts})`);
+          }
+
+          if (currentHeight > MIN_SCROLL_HEIGHT && children.length >= 1) {
+            if (currentHeight === lastScrollHeight) {
+              stableCount++;
+
+              const hasEnoughContent = currentHeight >= MIN_HEIGHT_FOR_COLLAPSE && children.length >= MIN_BLOCKS_FOR_COLLAPSE;
+              const waitedLongEnough = attempts >= 20 && stableCount >= STABLE_THRESHOLD;
+
+              if (stableCount >= STABLE_THRESHOLD && (hasEnoughContent || waitedLongEnough)) {
+                console.log(`Claude Leash: Content ready (${children.length} blocks, ${Math.round(currentHeight/1000)}k px)`);
+
+                // Update content cache
+                sessionContentCache.set(currentSessionId, {
+                  blockCount: children.length,
+                  scrollHeight: currentHeight,
+                  timestamp: Date.now()
+                });
+
+                resolve();
+                return;
+              }
+            } else {
+              stableCount = 0;
+            }
+            lastScrollHeight = currentHeight;
+          }
+        }
+
+        if (attempts < MAX_CONTENT_ATTEMPTS) {
+          setTimeout(checkContent, CONTENT_CHECK_INTERVAL_MS);
+        } else {
+          const container = getScrollContainer();
+          const contentParent = container ? getContentParent(container) : null;
+          const children = contentParent ? getContentChildren(contentParent) : [];
+          console.log(`Claude Leash: Timeout, proceeding with current content (${children.length} blocks, ${Math.round((container?.scrollHeight || 0)/1000)}k px)`);
+          resolve();
+        }
+      };
+
+      setTimeout(checkContent, CONTENT_CHECK_INTERVAL_MS);
     });
   }
 
@@ -634,13 +810,11 @@
 
         case 'getStatus':
         case 'reportStatus':
-          // reportStatus is sent by background.js when tab is activated
           const statusContainer = getScrollContainer();
           const statusTotalHeight = statusContainer ? Math.round(statusContainer.scrollHeight) : 0;
           const fullTotal = Math.round(statusTotalHeight + totalHiddenHeight);
           const visibleNow = Math.round(statusTotalHeight);
 
-          // Update badge
           updateBadge(visibleNow, fullTotal, currentSettings.isCollapsed);
 
           sendResponse({
@@ -665,7 +839,8 @@
           console.log('  React hydrated:', reactHydrated);
           console.log('  Hidden nodes:', hiddenNodes.length);
           console.log('  Hidden height:', totalHiddenHeight);
-          console.log('  Session states:', Object.keys(sessionStates).length);
+          console.log('  Content cache size:', sessionContentCache.size);
+          console.log('  History API triggered:', historyApiTriggered);
 
           if (cont) {
             cont.style.outline = '3px solid red';
@@ -687,7 +862,8 @@
               scrollHeight: Math.round(cont.scrollHeight),
               hiddenCount: hiddenNodes.length,
               sessionId: currentSessionId,
-              reactHydrated
+              reactHydrated,
+              cacheSize: sessionContentCache.size
             });
           } else {
             sendResponse({ success: false, error: 'No container found' });
@@ -722,10 +898,19 @@
     await waitForReactHydration();
     console.log('Claude Leash: React hydration complete, safe to manipulate DOM');
 
-    // Wait for actual content to appear (not just React hydration)
-    await waitForContent();
+    // Initialize abort controller
+    currentAbortController = new AbortController();
 
-    // Apply collapse if enabled (after content is ready)
+    // Wait for actual content to appear
+    try {
+      await waitForContent(currentAbortController.signal);
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        debugLog('Init content wait error:', e.message);
+      }
+    }
+
+    // Apply collapse if enabled
     if (currentSettings.isCollapsed && isEnabledForCurrentInterface()) {
       applyCollapse(currentSettings.maxHeight, true);
     }
@@ -734,75 +919,6 @@
     const container = getScrollContainer();
     const totalHeight = container ? Math.round(container.scrollHeight) : 0;
     updateBadge(totalHeight, totalHeight, currentSettings.isCollapsed);
-  }
-
-  // Wait for actual content to be rendered AND stabilized in the DOM
-  function waitForContent() {
-    return new Promise(resolve => {
-      let attempts = 0;
-      const maxAttempts = 40; // 40 * 200ms = 8 seconds max
-      let lastScrollHeight = 0;
-      let stableCount = 0;
-      const stableThreshold = 3; // Need 3 consecutive stable readings
-      const minHeightForCollapse = 5000; // Minimum 5k px to consider "real" content
-
-      const checkContent = () => {
-        attempts++;
-
-        // Clear caches to ensure fresh detection each time
-        cachedContainer = null;
-        cachedContentParent = null;
-
-        const container = getScrollContainer(true); // Force refresh
-
-        if (container) {
-          const currentHeight = container.scrollHeight;
-          const contentParent = getContentParent(container);
-          const children = contentParent ? getContentChildren(contentParent) : [];
-
-          // Log progress for debugging
-          if (attempts % 5 === 0) {
-            console.log(`Claude Leash: Checking content... (${children.length} blocks, ${Math.round(currentHeight/1000)}k px, attempt ${attempts})`);
-          }
-
-          // Check if content has stabilized (height stopped changing)
-          // AND we have meaningful content (>5k px) OR we've waited long enough
-          if (currentHeight > 500 && children.length >= 1) {
-            if (currentHeight === lastScrollHeight) {
-              stableCount++;
-
-              // Accept if stable AND either:
-              // 1. We have meaningful content (> 5k px AND > 10 blocks for conversations), OR
-              // 2. We've waited at least 4 seconds (20 attempts) and content is truly stable
-              const hasEnoughContent = currentHeight >= minHeightForCollapse && children.length >= 10;
-              const waitedLongEnough = attempts >= 20 && stableCount >= stableThreshold;
-
-              if (stableCount >= stableThreshold && (hasEnoughContent || waitedLongEnough)) {
-                console.log(`Claude Leash: Content ready (${children.length} blocks, ${Math.round(currentHeight/1000)}k px)`);
-                resolve();
-                return;
-              }
-            } else {
-              stableCount = 0; // Reset if height changed
-            }
-            lastScrollHeight = currentHeight;
-          }
-        }
-
-        if (attempts < maxAttempts) {
-          setTimeout(checkContent, 200);
-        } else {
-          const container = getScrollContainer();
-          const contentParent = container ? getContentParent(container) : null;
-          const children = contentParent ? getContentChildren(contentParent) : [];
-          console.log(`Claude Leash: Timeout, proceeding with current content (${children.length} blocks, ${Math.round((container?.scrollHeight || 0)/1000)}k px)`);
-          resolve();
-        }
-      };
-
-      // Start checking after a small delay
-      setTimeout(checkContent, 200);
-    });
   }
 
   init();
