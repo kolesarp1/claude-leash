@@ -215,16 +215,17 @@
     }
 
     // Behavior-based detection: find elements with overflow-y: auto or scroll
+    // Limit to first 200 divs to avoid freezing on complex pages
     const allDivs = document.querySelectorAll('div');
+    const maxDivsToCheck = Math.min(allDivs.length, 200);
     let best = null;
     let bestScrollHeight = 0;
 
-    for (const container of allDivs) {
-      const style = getComputedStyle(container);
-      const overflowY = style.overflowY;
+    for (let i = 0; i < maxDivsToCheck; i++) {
+      const container = allDivs[i];
 
-      // Check if this element has scrollable overflow
-      if (overflowY !== 'auto' && overflowY !== 'scroll') continue;
+      // Quick check: skip if element is too small (avoid getComputedStyle)
+      if (container.scrollHeight <= MIN_SCROLL_HEIGHT) continue;
 
       const rect = container.getBoundingClientRect();
       if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) continue;
@@ -232,9 +233,18 @@
       // Skip sidebar elements
       if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) continue;
 
-      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > MIN_SCROLL_HEIGHT) {
+      // Now check overflow (expensive call)
+      const style = getComputedStyle(container);
+      const overflowY = style.overflowY;
+
+      if (overflowY !== 'auto' && overflowY !== 'scroll') continue;
+
+      if (container.scrollHeight > bestScrollHeight) {
         best = container;
         bestScrollHeight = container.scrollHeight;
+
+        // Early exit if we found a large enough container
+        if (bestScrollHeight > 10000) break;
       }
     }
 
@@ -647,13 +657,19 @@
       const fastPathTimeout = 1500; // 1.5 seconds max
       const minMatchThreshold = 0.5; // Accept 50% match for fast path
 
+      // Only force refresh container detection once, then reuse cache
+      let container = getScrollContainer(true);
+
       while (Date.now() - fastPathStart < fastPathTimeout) {
         if (signal.aborted) return;
 
         await sleep(100);
 
-        cachedContainer = null; // Clear cache for fresh detection
-        const container = getScrollContainer(true);
+        // Reuse cached container, only refresh if not found
+        if (!container || !document.contains(container)) {
+          container = getScrollContainer(true);
+        }
+
         if (container) {
           const currentHeight = container.scrollHeight;
           const heightRatio = currentHeight / cachedContent.scrollHeight;
@@ -737,6 +753,11 @@
       let lastScrollHeight = 0;
       let stableCount = 0;
 
+      // Clear caches once at start, then reuse container
+      cachedContainer = null;
+      cachedContentParent = null;
+      let container = null;
+
       const checkContent = () => {
         // Check if aborted
         if (signal && signal.aborted) {
@@ -746,11 +767,11 @@
 
         attempts++;
 
-        // Clear caches to ensure fresh detection each time
-        cachedContainer = null;
-        cachedContentParent = null;
-
-        const container = getScrollContainer(true);
+        // Get container (only force refresh if not found or every 10 attempts)
+        if (!container || !document.contains(container) || attempts % 10 === 0) {
+          container = getScrollContainer(true);
+          cachedContentParent = null; // Reset content parent when container changes
+        }
 
         if (container) {
           const currentHeight = container.scrollHeight;
