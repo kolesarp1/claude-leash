@@ -2,119 +2,186 @@
 
 ## Project Overview
 
-Chrome extension that hides old messages in Claude.ai and Claude Code Web to improve UI performance during long conversations. Messages are hidden via CSS `display: none` - they remain in DOM and AI context.
+Chrome extension that improves UI performance on Claude.ai and Claude Code Web during long conversations by hiding older messages via CSS `display: none`. Messages remain in DOM and AI context - only rendering is skipped.
 
-## Current Status: ✅ WORKING (v1.8.1)
+## Current Status: ✅ WORKING (v3.5.0)
 
 The extension successfully:
-- Detects conversation messages on Claude.ai using class-based selectors
-- Hides older messages when "Collapse" is clicked
-- Shows badge with visible/total count (e.g., "8/53")
+- Detects conversation content using configurable DOM selectors
+- Hides older content based on pixel height threshold
+- Shows badge with visible/total pixel count (e.g., "10k/45k")
 - Supports Light/Dark/Auto themes
 - Works on both Claude.ai and Claude Code Web
+- Includes session caching for fast switching
+- Validates all incoming messages for security
 
 ## File Structure
 
 ```
 claude-leash/
-├── manifest.json      # Extension config, v1.8.1
-├── content.js         # Main logic - message detection & hide/show
-├── popup.html         # UI with slider, buttons, theme toggle
-├── popup.js           # Popup logic, settings persistence
-├── background.js      # Badge updates, tab communication
-├── icon16/48/128.png  # Extension icons
-└── README.md          # Documentation
+├── manifest.json           # Extension config (Manifest v3), v3.5.0
+├── content.js              # Main logic - detection, hiding, sessions (~1035 lines)
+├── popup.html              # UI with sliders, toggles, theme selector
+├── popup.js                # Popup logic, settings persistence
+├── background.js           # Badge updates, tab communication
+├── benchmark.js            # Performance testing script (paste in DevTools)
+├── package.json            # npm config with Jest + Puppeteer
+├── icon16/48/128.png       # Extension icons
+├── README.md               # User documentation
+├── CONTEXT.md              # This file - development context
+├── TEST_STRATEGY.md        # Comprehensive test strategy document
+├── tests/
+│   ├── unit/
+│   │   ├── validation.test.js       # Message validation tests
+│   │   ├── selectors.test.js        # DOM selector config tests
+│   │   └── container-detection.test.js  # Container scoring tests
+│   └── e2e/
+│       └── extension.test.js        # Puppeteer E2E tests
+└── .claude/
+    └── settings.local.json  # Git permissions for Claude
 ```
 
-## Key Detection Logic (content.js)
+## Architecture
 
-**Claude.ai detection (lines ~108-192):**
+### Key Components
+
+1. **DOM_SELECTORS Configuration** (`content.js:36-61`)
+   ```javascript
+   const DOM_SELECTORS = {
+     container: {
+       primary: '[class*="overflow-y-auto"], [class*="overflow-auto"]...',
+       fallback: 'div'
+     },
+     sidebar: {
+       classPatterns: ['bg-bg-', 'border-r-[', 'border-r ', 'flex-shrink-0'],
+       maxLeftPosition: 50,
+       maxWidth: 800,
+       viewportWidthRatio: 0.6
+     },
+     content: { validTag: 'DIV', minHeight: 10, minWidth: 50 }
+   };
+   ```
+   **Purpose**: Future-proof against Claude DOM changes. Update these selectors instead of hunting through code.
+
+2. **Message Validation** (`content.js:63-97`)
+   - Validates all incoming chrome.runtime messages
+   - Enforces bounds: maxHeight (1000-200000), maxLines (1-10000)
+   - Type-checks all boolean parameters
+
+3. **Container Detection** (`content.js:212-320`)
+   - Scores containers by: scroll height + viewport fill bonus
+   - Excludes sidebars via class patterns + position heuristics
+   - Uses configurable selectors from DOM_SELECTORS
+
+4. **Session Management** (`content.js:685-818`)
+   - Caches content info per session ID
+   - Fast-path: <1.5s restore for cached sessions
+   - Slow-path: Wait for content to stabilize (up to 8s)
+   - AbortController prevents race conditions
+
+5. **Early Intervention** (`content.js:407-439`)
+   - MutationObserver watches for new content
+   - Immediately hides new content if collapsed
+   - Uses requestAnimationFrame for smooth updates
+
+### Key Constants
+
 ```javascript
-// Find user messages and Claude responses by class
-const userMessages = document.querySelectorAll('[class*="font-user-message"]');
-const claudeResponses = document.querySelectorAll('[class*="font-claude-response"]');
-
-// Walk up DOM to find message containers
-// Stop at parent with >900px width or >3 siblings
+MIN_HEIGHT_FOR_COLLAPSE: 5000    // Min pixels to enable hiding
+MIN_BLOCKS_FOR_COLLAPSE: 10     // Min blocks to hide
+SCROLL_RESTORE_THRESHOLD: 300   // Pixels from top to restore
+CACHE_MATCH_THRESHOLD: 0.7      // 70% match for fast-path
+MAX_CONTENT_ATTEMPTS: 40        // ~8s max wait for content
 ```
 
-**Claude Code detection (lines ~55-107):**
+## Detection Logic
+
+### Container Finding
+1. Query elements matching `DOM_SELECTORS.container.primary`
+2. Score each by `scrollHeight + viewport_fill_bonus`
+3. Exclude sidebars matching `DOM_SELECTORS.sidebar.classPatterns`
+4. Fallback: scan all divs with getComputedStyle
+
+### Content Hiding
+1. Get all children from content parent
+2. Calculate height from bottom up
+3. Hide elements until `maxHeight` threshold reached
+4. Add CSS class `claude-leash-hidden` (CSS `display: none`)
+5. Insert placeholder with click-to-restore
+
+## Testing
+
+### Run Tests
+```bash
+npm install           # Install Jest + Puppeteer
+npm test              # Run all tests
+npm run test:unit     # Unit tests only
+npm run test:e2e      # E2E tests (requires Puppeteer)
+npm run test:coverage # With coverage report
+```
+
+### Performance Benchmark
 ```javascript
-// Uses data-testid="conversation-turn-X" attributes
-const turns = document.querySelectorAll('[data-testid^="conversation-turn-"]');
+// Paste benchmark.js contents into DevTools Console, then:
+await runBenchmark()  // Full benchmark (scroll FPS, layout cost, etc.)
+quickCheck()          // Quick DOM node count
 ```
 
-## Recent Development History
-
-1. **Initial problem**: Extension was finding wrong elements (web search result cards instead of conversation turns)
-2. **Solution attempts**:
-   - Tried structural detection (scroll containers, depth walking) - unreliable
-   - Tried position-based validation - still found wrong elements
-3. **Working solution**: Class-based selectors from DOM analysis
-   - `font-user-message` for user messages
-   - `font-claude-response` for Claude responses
-   - Walk up DOM to find container, stop at wide parent or many-sibling parent
-
-## Known Issues / Future Improvements
-
-1. **Message count mismatch**: Shows ~60 containers for 27 user messages (counts both user + Claude as separate)
-   - Could group into "turns" (user + response pairs)
-   
-2. **Initial flash**: Messages may briefly appear on page load before hiding
-
-3. **Claude Code Web**: Detection works but may need refinement for the sidebar panel
-
-4. **Persistence**: Hidden state persists via chrome.storage, but unhide-on-find can cause count drift
-
-## Debug Commands
-
-In popup:
-- **🔍 Debug**: Highlights elements, logs positions/sizes to console
-- **📋 Scan**: Deep DOM structure analysis
-
-Console output format:
-```
-Claude.ai: Raw counts - user: 27 claude: 576
-Claude.ai: Found 60 message containers
-Claude Leash: COLLAPSING - total: 60, keep: 8, will hide: 52
-Claude Leash: Applied - 52 hidden, 8 visible
-```
-
-## Testing Checklist
-
+### Manual Testing Checklist
 - [ ] Fresh page load shows correct total count
 - [ ] Clicking Collapse hides older messages
 - [ ] Clicking Show All reveals all messages
-- [ ] Slider adjustment changes keep-visible count
+- [ ] Slider adjustment changes visible content
 - [ ] Badge updates correctly
-- [ ] New messages from Claude are detected
-- [ ] Works after page navigation
+- [ ] New messages from Claude are detected and hidden
+- [ ] Works after page navigation (session switch)
 - [ ] Theme toggle works
+- [ ] Scroll to top incrementally restores content
 
-## Key Classes/Selectors
+## Debug Commands
 
-```javascript
-// Claude.ai
-'[class*="font-user-message"]'     // User messages
-'[class*="font-claude-response"]'  // Claude responses
+### In Extension Popup
+- **Debug button**: Highlights container (red) and content parent (orange), logs to console
+- **Debug Mode checkbox**: Enables verbose console logging
 
-// Claude Code Web  
-'[data-testid^="conversation-turn-"]'  // Turn containers
-'[class*="overflow-y-auto"]'           // Scroll containers
+### Console Output (with Debug Mode ON)
+```
+Claude Leash DEBUG: Found container: 15000px scroll, 800px visible, score=45000
+Claude Leash DEBUG: Found content parent with 25 children
+Claude Leash DEBUG: Hidden 20 blocks (12k px)
+Claude Leash DEBUG: Session change abc123 -> def456
+Claude Leash DEBUG: Fast path hit! (14k / 15k = 93%)
 ```
 
-## Useful Console Commands
+## Key Selectors Reference
 
 ```javascript
-// Check what extension finds
-document.querySelectorAll('[class*="font-user-message"]').length
-document.querySelectorAll('[class*="font-claude-response"]').length
+// Container detection (configurable in DOM_SELECTORS)
+'[class*="overflow-y-auto"]'      // Primary scroll containers
+'[class*="overflow-auto"]'        // Alternative overflow
+'[class*="overflow-y-scroll"]'    // Explicit scroll
 
-// Manual hide test
-document.querySelectorAll('[class*="font-user-message"]')[0].parentElement.style.display = 'none'
+// Sidebar exclusion patterns
+'bg-bg-'         // Claude Code sidebar background
+'border-r-['     // Right border (Tailwind)
+'border-r '      // Right border (standard)
+'flex-shrink-0'  // Fixed-width panels
 ```
 
-## Transcript Reference
+## Version History
 
-Full development session transcript at:
-`/mnt/transcripts/2025-12-11-12-39-19-claude-leash-element-detection-fix.txt`
+| Version | Changes |
+|---------|---------|
+| v3.5.0 | DOM selectors config, message validation, test infrastructure |
+| v3.4.10 | Verbose sidebar detection logging |
+| v3.4.x | Sidebar exclusion improvements |
+| v3.3.0 | Early intervention, performance optimizations |
+| v3.2.0 | Switch to pixel-based cropping |
+| v3.0.0 | Session caching, fast-path switching |
+
+## Contributing
+
+1. Update `DOM_SELECTORS` in content.js when Claude changes its DOM structure
+2. Add tests for new functionality in `tests/`
+3. Run `npm test` before committing
+4. Use `benchmark.js` to validate performance impact
