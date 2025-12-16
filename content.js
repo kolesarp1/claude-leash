@@ -214,29 +214,46 @@
       }
     }
 
-    // Strategy 1: Try CSS class-based detection first (faster, more reliable)
-    const overflowContainers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"], [style*="overflow"]');
+    const viewportHeight = window.innerHeight;
     let best = null;
-    let bestScrollHeight = 0;
+    let bestScore = 0;
+
+    // Score function: prefer large containers that fill most of the viewport
+    function scoreContainer(container) {
+      const rect = container.getBoundingClientRect();
+      const scrollHeight = container.scrollHeight;
+
+      // Must be visible and reasonably sized
+      if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) return 0;
+      if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) return 0;
+      if (scrollHeight <= MIN_SCROLL_HEIGHT) return 0;
+
+      // Score based on: scrollHeight + bonus for filling viewport
+      let score = scrollHeight;
+
+      // Bonus if container height is close to viewport height (main content area)
+      const heightRatio = rect.height / viewportHeight;
+      if (heightRatio > 0.5) score += 10000; // Big bonus for main content area
+      if (heightRatio > 0.7) score += 20000;
+
+      return score;
+    }
+
+    // Strategy 1: Try CSS class-based detection (Tailwind overflow classes)
+    const overflowContainers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"], [class*="overflow-y-scroll"]');
 
     for (const container of overflowContainers) {
-      if (container.scrollHeight <= MIN_SCROLL_HEIGHT) continue;
-
-      const rect = container.getBoundingClientRect();
-      if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) continue;
-      if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) continue;
-
-      if (container.scrollHeight > bestScrollHeight) {
+      const score = scoreContainer(container);
+      if (score > bestScore) {
         best = container;
-        bestScrollHeight = container.scrollHeight;
-        if (bestScrollHeight > 20000) break; // Found a very large container
+        bestScore = score;
       }
     }
 
-    // Strategy 2: If no good candidate found, scan divs (limited)
-    if (!best || bestScrollHeight < MIN_SCROLL_HEIGHT) {
+    // Strategy 2: Scan divs with getComputedStyle (limited, for non-Tailwind containers)
+    if (!best || bestScore < 10000) {
       const allDivs = document.querySelectorAll('div');
-      const maxDivsToCheck = Math.min(allDivs.length, 300);
+      const maxDivsToCheck = Math.min(allDivs.length, 400);
 
       for (let i = 0; i < maxDivsToCheck; i++) {
         const container = allDivs[i];
@@ -246,19 +263,25 @@
         if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) continue;
         if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) continue;
 
-        // Only call getComputedStyle if this could be a better candidate
-        if (container.scrollHeight > bestScrollHeight) {
+        // Only check overflow if it could beat current best
+        const potentialScore = container.scrollHeight + (rect.height / viewportHeight > 0.5 ? 30000 : 0);
+        if (potentialScore > bestScore) {
           const style = getComputedStyle(container);
           if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-            best = container;
-            bestScrollHeight = container.scrollHeight;
-            if (bestScrollHeight > 20000) break;
+            const score = scoreContainer(container);
+            if (score > bestScore) {
+              best = container;
+              bestScore = score;
+            }
           }
         }
       }
     }
 
-    if (best) cachedContainer = best;
+    if (best) {
+      cachedContainer = best;
+      debugLog(`Found container: ${best.scrollHeight}px, score=${bestScore}`);
+    }
     return cachedContainer;
   }
 
