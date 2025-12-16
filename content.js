@@ -482,10 +482,10 @@
         console.log(`Claude Leash: Hidden ${hiddenNodes.length} blocks (${Math.round(hiddenHeight/1000)}k px)`);
       }
 
-      // Update content cache
+      // Update content cache with TOTAL height (before hiding)
       sessionContentCache.set(currentSessionId, {
         blockCount: children.length,
-        scrollHeight: container.scrollHeight,
+        scrollHeight: totalHeight, // Use totalHeight, not container.scrollHeight (which is reduced after hiding)
         timestamp: Date.now()
       });
 
