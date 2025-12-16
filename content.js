@@ -1,44 +1,120 @@
 // Claude Leash - Content Script
-// Works on both Claude Code Web and regular Claude.ai
+// Crops conversation by pixel height to keep page responsive
 (function() {
   'use strict';
 
   const STORAGE_KEY = 'claudeCollapseSettings';
-  let currentSettings = { keepVisible: 8, isCollapsed: false };
+
+  let currentSettings = { maxHeight: 12000, isCollapsed: false }; // Default ~500 lines at 24px
   let lastUrl = location.href;
-  let cachedMessages = []; // Cache found messages to track total even when hidden
-  let originalTotal = 0; // Track original count before hiding
+  let isApplying = false;
+  let cachedContainer = null;
+  let originalTotalHeight = 0;
+  let lastLoggedVisible = 0; // Track last logged value to reduce spam
 
   // Load settings from storage
   async function loadSettings() {
     try {
       const result = await chrome.storage.local.get(STORAGE_KEY);
       if (result[STORAGE_KEY]) {
-        currentSettings = result[STORAGE_KEY];
+        // Support both old (maxLines) and new (maxHeight) settings
+        if (result[STORAGE_KEY].maxHeight) {
+          currentSettings.maxHeight = result[STORAGE_KEY].maxHeight;
+        } else if (result[STORAGE_KEY].maxLines) {
+          currentSettings.maxHeight = result[STORAGE_KEY].maxLines * 24; // Convert
+        }
+        currentSettings.isCollapsed = result[STORAGE_KEY].isCollapsed || false;
       }
     } catch (e) {}
   }
 
-  // Detect which Claude interface we're on
-  function isClaudeCode() {
-    return location.pathname.startsWith('/code');
-  }
-
-  // Find the scroll container
-  function getScrollContainer() {
-    const containers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"]');
-    for (const container of containers) {
-      const rect = container.getBoundingClientRect();
-      if (rect.height > 200 && rect.width > 200) {
-        return container;
+  // Find the main scroll container - look for the one with the most scrollable content
+  function getScrollContainer(forceRefresh = false) {
+    // Return cached container if still valid and in document
+    if (!forceRefresh && cachedContainer && document.contains(cachedContainer)) {
+      // Only use cache if it still has reasonable content
+      if (cachedContainer.scrollHeight > 2000) {
+        return cachedContainer;
       }
     }
-    return null;
+
+    const containers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"]');
+    let best = null;
+    let bestScrollHeight = 0;
+
+    for (const container of containers) {
+      const rect = container.getBoundingClientRect();
+      // Skip tiny containers
+      if (rect.width < 300 || rect.height < 200) continue;
+
+      // Skip left sidebar (typically narrow and on the left)
+      if (rect.left < 150 && rect.width < 400) continue;
+
+      // Must have significant scrollable content (not sidebar/small panels)
+      // 2000px minimum = roughly 80+ lines of content
+      if (container.scrollHeight > bestScrollHeight && container.scrollHeight > 2000) {
+        best = container;
+        bestScrollHeight = container.scrollHeight;
+      }
+    }
+
+    // Only update cache if we found something good
+    if (best) {
+      cachedContainer = best;
+    }
+
+    return cachedContainer;
   }
 
-  // Force scroll container to recalculate
-  function refreshScrollbar() {
-    const container = getScrollContainer();
+  // Find hideable content elements within the container
+  function findContentElements(container) {
+    if (!container) return [];
+
+    // Try multiple strategies to find message-like elements
+    let elements = [];
+
+    // Strategy 1: Look for elements with data-testid (Claude uses these)
+    elements = [...container.querySelectorAll('[data-testid]')].filter(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.height > 50 && rect.width > 200;
+    });
+
+    if (elements.length > 5) {
+      return elements;
+    }
+
+    // Strategy 2: Walk down to find the level with most direct children
+    let current = container;
+    let bestLevel = [];
+
+    for (let depth = 0; depth < 10; depth++) {
+      const children = [...current.children].filter(c => {
+        if (c.tagName !== 'DIV') return false;
+        const rect = c.getBoundingClientRect();
+        return rect.height > 30 && rect.width > 200;
+      });
+
+      if (children.length > bestLevel.length) {
+        bestLevel = children;
+      }
+
+      // Go into the largest child
+      const next = [...current.children]
+        .filter(c => c.tagName === 'DIV')
+        .sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
+
+      if (next && next.scrollHeight > 200) {
+        current = next;
+      } else {
+        break;
+      }
+    }
+
+    return bestLevel;
+  }
+
+  // Refresh scrollbar after DOM changes
+  function refreshScrollbar(container) {
     if (container) {
       const scrollTop = container.scrollTop;
       container.style.overflow = 'hidden';
@@ -48,467 +124,197 @@
     }
   }
 
-  // Find message elements
-  function findMessages() {
-    let messages = [];
-    
-    if (isClaudeCode()) {
-      // === Claude Code Web ===
-      // Find conversation container and get all message elements
+  // Apply the collapse - hide content above the pixel limit
+  function applyCollapse(maxHeight, isCollapsed) {
+    if (isApplying) return { success: true };
+    isApplying = true;
 
-      // Find the main conversation container
-      const scrollContainers = document.querySelectorAll('[class*="overflow-y-auto"]');
-      let bestContainer = null;
-      let bestMessages = [];
+    currentSettings = { maxHeight, isCollapsed };
 
-      for (const container of scrollContainers) {
-        const rect = container.getBoundingClientRect();
-        // Main conversation should be large, tall, and NOT in the left sidebar
-        // Sidebar is typically < 400px from left edge
-        if (rect.width < 300 || rect.height < 200) continue;
-        if (rect.left < 400 && rect.width < 600) continue; // Skip sidebar
+    // Unhide any previously hidden elements first (to get accurate measurements)
+    if (window.claudeLeashHidden) {
+      window.claudeLeashHidden.forEach(el => {
+        el.style.removeProperty('display');
+      });
+      window.claudeLeashHidden = [];
+    }
 
-        // Find the message list level by drilling down
-        let messageList = container;
-        for (let depth = 0; depth < 10; depth++) {
-          const children = [...messageList.children].filter(c => c.tagName === 'DIV');
+    // Small delay to let DOM update after unhiding
+    const container = getScrollContainer();
+    if (!container) {
+      isApplying = false;
+      return { success: false, error: 'No scroll container found' };
+    }
 
-          // Check if this level has multiple substantial children (messages)
-          const substantial = children.filter(c => {
-            const text = c.innerText || '';
-            const childRect = c.getBoundingClientRect();
-            return text.length > 30 && childRect.height > 50;
-          });
+    // Get total height AFTER unhiding everything
+    const totalHeight = container.scrollHeight;
 
-          if (substantial.length > bestMessages.length) {
-            bestMessages = substantial;
-            bestContainer = messageList;
-            console.log('Claude Code: Found', substantial.length, 'messages at depth', depth, 'in container width', Math.round(rect.width));
-          }
+    // Track original total for display purposes
+    if (totalHeight > originalTotalHeight) {
+      originalTotalHeight = totalHeight;
+    }
 
-          // Go deeper
-          const firstChild = children.find(c => {
-            const childRect = c.getBoundingClientRect();
-            return childRect.height > 100;
-          });
-          if (firstChild) {
-            messageList = firstChild;
-          } else {
+    let hiddenHeight = 0;
+
+    if (isCollapsed && totalHeight > maxHeight) {
+      const elements = findContentElements(container);
+
+      if (elements.length > 0) {
+        // Calculate cumulative heights from bottom
+        let heightFromBottom = 0;
+        const hiddenElements = [];
+
+        // First pass: measure all heights
+        const heights = elements.map(el => el.getBoundingClientRect().height);
+
+        for (let i = elements.length - 1; i >= 0; i--) {
+          heightFromBottom += heights[i];
+
+          if (heightFromBottom > maxHeight) {
+            // This element and all before it should be hidden
+            for (let j = 0; j <= i; j++) {
+              hiddenElements.push(elements[j]);
+              hiddenHeight += heights[j];
+            }
             break;
           }
         }
-      }
 
-      if (bestMessages.length > 0) {
-        messages = bestMessages;
-        window.claudeLeashAllElements = bestMessages;
-        // For Claude Code, messages ARE the user messages for now (no separate tracking)
-        window.claudeLeashUserMessages = bestMessages;
-        console.log('Claude Code: Using', bestMessages.length, 'messages for hiding');
-      }
-    } else {
-      // === Regular Claude.ai ===
-      // Simple approach: count user messages, hide everything above a cutoff point
-
-      const userMessages = [...document.querySelectorAll('[class*="font-user-message"]')];
-      console.log('Claude.ai: Found', userMessages.length, 'user messages');
-
-      if (userMessages.length > 0) {
-        // Sort user messages by vertical position
-        userMessages.sort((a, b) => {
-          return a.getBoundingClientRect().top - b.getBoundingClientRect().top;
+        // Hide elements
+        hiddenElements.forEach(el => {
+          el.style.setProperty('display', 'none', 'important');
         });
-
-        // Find the conversation container (walk up from first user message)
-        let conversationContainer = null;
-        let current = userMessages[0];
-        for (let i = 0; i < 20; i++) {
-          const parent = current.parentElement;
-          if (!parent) break;
-          const rect = parent.getBoundingClientRect();
-          if (rect.width > 900) {
-            conversationContainer = parent;
-            break;
-          }
-          current = parent;
-        }
-
-        if (conversationContainer) {
-          // Find the actual message list - look for container with many children
-          let messageList = conversationContainer;
-          for (let depth = 0; depth < 5; depth++) {
-            const children = [...messageList.children].filter(c => c.tagName === 'DIV');
-            if (children.length > 5) {
-              // Found the level with many children
-              break;
-            }
-            // Go deeper - find first substantial child
-            const firstChild = children.find(c => {
-              const rect = c.getBoundingClientRect();
-              return rect.height > 100;
-            });
-            if (firstChild) {
-              messageList = firstChild;
-            } else {
-              break;
-            }
-          }
-
-          // Get all children at this level
-          const allChildren = [...messageList.children].filter(el => {
-            if (el.tagName !== 'DIV') return false;
-            const rect = el.getBoundingClientRect();
-            return rect.height > 30 && rect.width > 100;
-          });
-
-          // Store user messages and all hideable elements
-          messages = userMessages; // For counting
-          window.claudeLeashAllElements = allChildren; // For hiding
-          window.claudeLeashUserMessages = userMessages; // For cutoff point
-
-          console.log('Claude.ai: Found', allChildren.length, 'hideable elements at message list level');
-        } else {
-          messages = userMessages;
-        }
+        window.claudeLeashHidden = hiddenElements;
       }
     }
-    
-    // Sort by vertical position
-    messages.sort((a, b) => {
-      const rectA = a.getBoundingClientRect();
-      const rectB = b.getBoundingClientRect();
-      return rectA.top - rectB.top;
-    });
-    
-    return messages;
+
+    // Refresh scrollbar
+    setTimeout(() => refreshScrollbar(container), 100);
+
+    // Calculate visible height
+    const visibleHeight = Math.max(0, totalHeight - hiddenHeight);
+
+    // Use original total for consistent display
+    const displayTotal = Math.max(originalTotalHeight, totalHeight);
+
+    // Update badge
+    setTimeout(() => {
+      updateBadge(visibleHeight, displayTotal, isCollapsed);
+      isApplying = false;
+    }, 150);
+
+    // Only log if significant change (>2k difference)
+    if (Math.abs(visibleHeight - lastLoggedVisible) > 2000) {
+      console.log(`Claude Leash: ${Math.round(visibleHeight/1000)}k/${Math.round(displayTotal/1000)}k px visible`);
+      lastLoggedVisible = visibleHeight;
+    }
+    return {
+      success: true,
+      totalHeight: displayTotal,
+      hiddenHeight,
+      visibleHeight,
+      // For backwards compatibility with popup
+      total: displayTotal,
+      hidden: hiddenHeight,
+      visible: visibleHeight
+    };
   }
 
-  // Report status to background script for badge update
-  function reportStatus() {
-    const total = originalTotal > 0 ? originalTotal : (cachedMessages.length || findMessages().length);
-
-    // Calculate visible based on settings
-    let visible = total;
-    if (currentSettings.isCollapsed) {
-      visible = Math.min(currentSettings.keepVisible, total);
-    }
-    const hidden = total - visible;
-
+  // Update extension badge
+  function updateBadge(visible, total, isCollapsed) {
     chrome.runtime.sendMessage({
       action: 'updateBadge',
       visible,
       total,
-      isCollapsed: currentSettings.isCollapsed
+      isCollapsed
     }).catch(() => {});
-
-    return { visible, total, hidden };
   }
 
-  // Apply collapse/expand
-  function applyCollapse(keepVisible, isCollapsed) {
-    currentSettings = { keepVisible, isCollapsed };
-
-    // First, unhide everything
-    if (window.claudeLeashAllElements) {
-      window.claudeLeashAllElements.forEach(el => el.style.removeProperty('display'));
-    }
-    cachedMessages.forEach(msg => msg.style.removeProperty('display'));
-
-    // Find all messages (user messages for counting)
-    const messages = findMessages();
-    cachedMessages = messages;
-    originalTotal = messages.length;
-
-    const total = messages.length; // Number of user messages
-    const hideCount = Math.max(0, total - keepVisible);
-    let actuallyHidden = 0;
-
-    console.log(`Claude Leash: ${isCollapsed ? 'COLLAPSING' : 'EXPANDING'} - total: ${total}, keep: ${keepVisible}, will hide: ${isCollapsed ? hideCount : 0}`);
-
-    if (isCollapsed && hideCount > 0 && window.claudeLeashUserMessages && window.claudeLeashAllElements) {
-      // Find the cutoff user message (the last one we want to hide)
-      const cutoffUserMsg = window.claudeLeashUserMessages[hideCount - 1];
-      if (cutoffUserMsg) {
-        // Find which element in allElements contains or comes after the cutoff
-        // Use DOM order, not visual positions (which change with scroll)
-        const allElements = window.claudeLeashAllElements;
-
-        // Find the index of the element containing the cutoff user message
-        let cutoffIndex = -1;
-        for (let i = 0; i < allElements.length; i++) {
-          if (allElements[i].contains(cutoffUserMsg)) {
-            cutoffIndex = i;
-            break;
-          }
-        }
-
-        // If not found directly, find elements that come before the first visible user message
-        if (cutoffIndex === -1) {
-          const firstVisibleUserMsg = window.claudeLeashUserMessages[hideCount];
-          if (firstVisibleUserMsg) {
-            for (let i = 0; i < allElements.length; i++) {
-              if (allElements[i].contains(firstVisibleUserMsg)) {
-                cutoffIndex = i - 1; // Hide everything before this
-                break;
-              }
-            }
-          }
-        }
-
-        // Hide all elements up to and including the cutoff index
-        if (cutoffIndex >= 0) {
-          for (let i = 0; i <= cutoffIndex; i++) {
-            allElements[i].style.setProperty('display', 'none', 'important');
-            actuallyHidden++;
-          }
-        }
-
-        console.log(`Claude Leash: Cutoff at element index ${cutoffIndex}, hiding ${actuallyHidden} of ${allElements.length}`);
-      }
-    }
-
-    console.log(`Claude Leash: Applied - ${actuallyHidden} elements hidden, keeping ${keepVisible} messages`);
-
-    // Refresh scrollbar after DOM changes
-    setTimeout(refreshScrollbar, 100);
-
-    // Update badge
-    setTimeout(reportStatus, 150);
-
-    return {
-      success: true,
-      total,
-      hidden: hideCount,
-      visible: total - hideCount
-    };
-  }
-
-  // Get current status
-  function getStatus() {
-    const messages = findMessages();
-    const hidden = messages.filter(m => m.style.display === 'none').length;
-    
-    return {
-      success: true,
-      total: messages.length,
-      hidden,
-      visible: messages.length - hidden
-    };
-  }
-
-  // Watch for URL changes
+  // Watch for URL changes (session switches)
   function watchUrlChanges() {
     setInterval(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        // Reset cached data on URL change
-        cachedMessages = [];
-        originalTotal = 0;
-        window.claudeLeashAllElements = null;
-        window.claudeLeashUserMessages = null;
+        window.claudeLeashHidden = null;
+        cachedContainer = null; // Clear cached container on URL change
+        originalTotalHeight = 0; // Reset total height tracking
 
-        // For Claude Code Web, wait longer and retry multiple times
-        // because session content loads asynchronously
-        const retryDelays = isClaudeCode() ? [500, 1000, 2000, 3000] : [500];
-        retryDelays.forEach(delay => {
+        // Reapply after content loads
+        [500, 1500, 3000].forEach(delay => {
           setTimeout(() => {
             if (currentSettings.isCollapsed) {
-              applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
-            } else {
-              reportStatus();
+              applyCollapse(currentSettings.maxHeight, true);
             }
           }, delay);
         });
       }
-    }, 300);
+    }, 500);
   }
 
-  // Watch for new messages
-  function watchNewMessages() {
-    const observer = new MutationObserver((mutations) => {
-      clearTimeout(window.cccMutationDebounce);
-      window.cccMutationDebounce = setTimeout(() => {
+  // Watch for new content (debounced)
+  function watchNewContent() {
+    let debounceTimer = null;
+
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
         if (currentSettings.isCollapsed) {
-          applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
-        } else {
-          reportStatus();
+          applyCollapse(currentSettings.maxHeight, true);
         }
-      }, 500);
+      }, 800);
     });
 
-    // Observe document body to catch all changes including session switches
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // Periodic check for Claude Code Web - reapply if messages are found but not hidden
-  function watchForLateContent() {
-    if (!isClaudeCode()) return;
-
-    setInterval(() => {
-      if (!currentSettings.isCollapsed) return;
-
-      // Check if we should reapply
-      const messages = findMessages();
-      if (messages.length > 0 && messages.length !== originalTotal) {
-        console.log('Claude Leash: Detected content change, reapplying...');
-        applyCollapse(currentSettings.keepVisible, currentSettings.isCollapsed);
-      }
-    }, 2000);
-  }
-
-  // Listen for messages from popup and background
+  // Message handler for popup communication
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       switch (message.action) {
         case 'collapse':
-          const result = applyCollapse(message.keepVisible, message.isCollapsed);
+          // Support both maxHeight (new) and maxLines (old)
+          const height = message.maxHeight || (message.maxLines * 24);
+          const result = applyCollapse(height, message.isCollapsed);
           sendResponse(result);
           break;
-          
+
         case 'getStatus':
-          sendResponse(getStatus());
+          const container = getScrollContainer();
+          const totalHeight = container ? container.scrollHeight : 0;
+          sendResponse({ success: true, total: totalHeight, totalHeight });
           break;
 
-        case 'reportStatus':
-          reportStatus();
-          sendResponse({ success: true });
-          break;
-        
         case 'debug':
-          const msgs = findMessages();
-          console.log('Claude Leash DEBUG: Found', msgs.length, 'elements');
-          
-          // Also show what the class-based selectors find directly
-          const userMsgsByClass = document.querySelectorAll('[class*="font-user-message"]');
-          const claudeRespByClass = document.querySelectorAll('[class*="font-claude-response"]');
-          console.log('Direct class search: user-message:', userMsgsByClass.length, 'claude-response:', claudeRespByClass.length);
-          
-          msgs.forEach((el, i) => {
-            const rect = el.getBoundingClientRect();
-            const hasUserMsg = el.querySelector('[class*="font-user-message"]') !== null;
-            const hasClaudeResp = el.querySelector('[class*="font-claude-response"]') !== null;
-            const display = el.style.display || 'default';
-            console.log(`  ${i}: pos=(${Math.round(rect.left)},${Math.round(rect.top)}) size=${Math.round(rect.width)}x${Math.round(rect.height)} display="${display}" user:${hasUserMsg} claude:${hasClaudeResp} text="${el.innerText?.slice(0, 40)}"`);
-            
-            // Highlight with different colors based on visibility
-            if (rect.width > 0 && rect.height > 0) {
-              const color = display === 'none' ? 'gray' : (i % 2 === 0 ? 'red' : 'blue');
-              el.style.outline = `3px solid ${color}`;
-              el.style.outlineOffset = '2px';
-              setTimeout(() => { 
-                el.style.outline = ''; 
-                el.style.outlineOffset = ''; 
-              }, 5000);
-            }
-          });
-          
-          // Also try to show what's NOT being found
-          if (msgs.length === 0) {
-            console.log('No messages found! Trying to identify conversation area...');
-            
-            // Show what font-user-message elements look like
-            if (userMsgsByClass.length > 0) {
-              console.log('User message elements found but not extracted as turns:');
-              userMsgsByClass.forEach((el, i) => {
-                const rect = el.getBoundingClientRect();
-                console.log(`  User ${i}: pos=(${Math.round(rect.left)},${Math.round(rect.top)}) text="${el.innerText?.slice(0, 40)}"`);
-              });
-            }
-          }
-          
-          sendResponse({ success: true, found: msgs.length });
-          break;
-        
-        case 'scan':
-          console.log('=== Claude Leash DOM Scanner ===');
-          console.log('Interface:', isClaudeCode() ? 'Claude Code' : 'Claude.ai');
-          
-          if (isClaudeCode()) {
-            // Scan for Claude Code turn structure
-            console.log('Scanning for conversation turns...');
-            
-            const scrollContainers = document.querySelectorAll('[class*="overflow-y-auto"]');
-            
-            for (const container of scrollContainers) {
-              const rect = container.getBoundingClientRect();
-              if (rect.width < 300 || rect.left < 200) continue;
-              
-              console.log(`Container: ${Math.round(rect.width)}x${Math.round(rect.height)} at left=${Math.round(rect.left)}`);
-              
-              let current = container;
-              for (let depth = 0; depth < 10; depth++) {
-                const children = [...current.children].filter(c => c.tagName === 'DIV');
-                const substantial = children.filter(c => (c.innerText?.length || 0) > 30);
-                
-                console.log(`  Depth ${depth}: ${children.length} children, ${substantial.length} substantial`);
-                
-                if (substantial.length >= 2) {
-                  console.log('  ^ Found conversation turns!');
-                  substantial.slice(0, 3).forEach((turn, j) => {
-                    turn.style.outline = '3px solid ' + ['red', 'blue', 'green'][j];
-                    turn.style.outlineOffset = '2px';
-                    console.log(`    Turn ${j}: "${turn.innerText?.slice(0, 50)}..."`);
-                    setTimeout(() => { turn.style.outline = ''; turn.style.outlineOffset = ''; }, 5000);
-                  });
-                  break;
-                }
-                
-                const firstChild = current.querySelector(':scope > div');
-                if (!firstChild) break;
-                current = firstChild;
-              }
-              break; // Only scan first large container
-            }
-          } else {
-            // Scan for Claude.ai elements using class-based detection
-            console.log('Scanning Claude.ai...');
-            
-            // Show what the class selectors find
-            const userMsgs = document.querySelectorAll('[class*="font-user-message"]');
-            const claudeResps = document.querySelectorAll('[class*="font-claude-response"]');
-            
-            console.log('Class-based detection:');
-            console.log('  font-user-message elements:', userMsgs.length);
-            console.log('  font-claude-response elements:', claudeResps.length);
-            
-            // Highlight user messages
-            userMsgs.forEach((el, i) => {
-              const rect = el.getBoundingClientRect();
-              console.log(`  User ${i}: pos=(${Math.round(rect.left)},${Math.round(rect.top)}) size=${Math.round(rect.width)}x${Math.round(rect.height)} text="${el.innerText?.slice(0, 30)}"`);
-              el.style.outline = '3px solid green';
-              el.style.outlineOffset = '2px';
-              setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 5000);
+          // Highlight the scroll container and its content
+          // Force refresh to find the best container
+          cachedContainer = null;
+          const cont = getScrollContainer(true);
+          if (cont) {
+            cont.style.outline = '3px solid red';
+            const elements = findContentElements(cont);
+            elements.forEach((el, i) => {
+              el.style.outline = `2px solid ${i % 2 === 0 ? 'blue' : 'green'}`;
             });
-            
-            // Now show what findMessages extracts
-            const found = findMessages();
-            console.log('findMessages() returned:', found.length, 'turn containers');
-            
-            if (found.length > 0) {
-              console.log('Highlighting first 3 turn containers:');
-              found.slice(0, 3).forEach((el, i) => {
-                const rect = el.getBoundingClientRect();
-                console.log(`  Turn ${i}: pos=(${Math.round(rect.left)},${Math.round(rect.top)}) size=${Math.round(rect.width)}x${Math.round(rect.height)}`);
-                el.style.outline = '3px solid ' + ['red', 'blue', 'orange'][i];
-                el.style.outlineOffset = '4px';
-                setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 5000);
-              });
-            } else {
-              console.log('No turn containers extracted! Check the turn container detection logic.');
-            }
+            setTimeout(() => {
+              cont.style.outline = '';
+              elements.forEach(el => el.style.outline = '');
+            }, 3000);
+            sendResponse({
+              success: true,
+              found: elements.length,
+              scrollHeight: cont.scrollHeight
+            });
+          } else {
+            sendResponse({ success: false, error: 'No container found' });
           }
-          
-          sendResponse({ success: true, message: 'Check console' });
           break;
-          
+
         default:
           sendResponse({ success: false, error: 'Unknown action' });
       }
     } catch (e) {
-      console.error('Claude Leash error:', e);
       sendResponse({ success: false, error: e.message });
     }
-    
     return true;
   });
 
@@ -516,12 +322,15 @@
   async function init() {
     await loadSettings();
     watchUrlChanges();
-    watchNewMessages();
-    watchForLateContent();
-    setTimeout(reportStatus, 1000);
+    watchNewContent();
+
+    // Initial badge update
+    setTimeout(() => {
+      const container = getScrollContainer();
+      const totalHeight = container ? container.scrollHeight : 0;
+      updateBadge(totalHeight, totalHeight, currentSettings.isCollapsed);
+    }, 1000);
   }
 
   init();
-  console.log('Claude Leash: Loaded for', isClaudeCode() ? 'Claude Code' : 'Claude.ai');
-
 })();

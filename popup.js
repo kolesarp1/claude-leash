@@ -1,37 +1,48 @@
-// Popup script - communicates with content script
+// Claude Leash - Popup Script
 (function() {
   'use strict';
 
   const STORAGE_KEY = 'claudeCollapseSettings';
   const THEME_KEY = 'claudeLeashTheme';
-  
+
   let currentTab = null;
   let isCollapsed = false;
-  let keepVisible = 8;
+  let maxHeight = 12000; // pixels
+  let scale = 1;
   let currentTheme = 'light';
 
   // Elements
   const statusEl = document.getElementById('status');
   const sliderEl = document.getElementById('slider');
   const sliderValueEl = document.getElementById('sliderValue');
+  const scaleSliderEl = document.getElementById('scaleSlider');
+  const scaleValueEl = document.getElementById('scaleValue');
   const toggleBtn = document.getElementById('toggleBtn');
   const toggleIcon = document.getElementById('toggleIcon');
   const toggleText = document.getElementById('toggleText');
   const refreshBtn = document.getElementById('refreshBtn');
+  const debugBtn = document.getElementById('debugBtn');
   const themeLightBtn = document.getElementById('themeLightBtn');
   const themeDarkBtn = document.getElementById('themeDarkBtn');
   const themeAutoBtn = document.getElementById('themeAutoBtn');
+
+  // Format pixel value for display
+  function formatPixels(px) {
+    if (px >= 1000) {
+      return Math.round(px / 1000) + 'k';
+    }
+    return px.toString();
+  }
 
   // ============ Theme handling ============
   function applyTheme(theme) {
     const body = document.body;
     body.classList.remove('light', 'dark');
-    
-    // Update button states
+
     themeLightBtn.classList.remove('active');
     themeDarkBtn.classList.remove('active');
     themeAutoBtn.classList.remove('active');
-    
+
     if (theme === 'auto') {
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       body.classList.add(prefersDark ? 'dark' : 'light');
@@ -41,15 +52,14 @@
       if (theme === 'light') themeLightBtn.classList.add('active');
       if (theme === 'dark') themeDarkBtn.classList.add('active');
     }
-    
+
     currentTheme = theme;
   }
 
   async function loadTheme() {
     try {
       const result = await chrome.storage.local.get(THEME_KEY);
-      const theme = result[THEME_KEY] || 'light'; // Default to light
-      applyTheme(theme);
+      applyTheme(result[THEME_KEY] || 'light');
     } catch (e) {
       applyTheme('light');
     }
@@ -59,16 +69,11 @@
     try {
       await chrome.storage.local.set({ [THEME_KEY]: theme });
       applyTheme(theme);
-    } catch (e) {
-      console.error('Failed to save theme:', e);
-    }
+    } catch (e) {}
   }
 
-  // Listen for system theme changes when in auto mode
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (currentTheme === 'auto') {
-      applyTheme('auto');
-    }
+    if (currentTheme === 'auto') applyTheme('auto');
   });
 
   // ============ Settings handling ============
@@ -76,39 +81,38 @@
     try {
       const result = await chrome.storage.local.get(STORAGE_KEY);
       if (result[STORAGE_KEY]) {
-        keepVisible = result[STORAGE_KEY].keepVisible || 8;
+        // Support both old (maxLines) and new (maxHeight) settings
+        if (result[STORAGE_KEY].maxHeight) {
+          maxHeight = result[STORAGE_KEY].maxHeight;
+        } else if (result[STORAGE_KEY].maxLines) {
+          maxHeight = result[STORAGE_KEY].maxLines * 24; // Convert old format
+        }
+        scale = result[STORAGE_KEY].scale || 1;
         isCollapsed = result[STORAGE_KEY].isCollapsed || false;
       }
-      sliderEl.value = keepVisible;
-      sliderValueEl.textContent = keepVisible;
+      sliderEl.value = maxHeight;
+      sliderValueEl.textContent = formatPixels(maxHeight);
+      scaleSliderEl.value = scale;
+      scaleValueEl.textContent = scale + 'x';
       updateToggleButton();
-    } catch (e) {
-      console.error('Failed to load settings:', e);
-    }
+    } catch (e) {}
   }
 
   async function saveSettings() {
     try {
       await chrome.storage.local.set({
-        [STORAGE_KEY]: { keepVisible, isCollapsed }
+        [STORAGE_KEY]: { maxHeight, scale, isCollapsed }
       });
-    } catch (e) {
-      console.error('Failed to save settings:', e);
-    }
+    } catch (e) {}
   }
 
   // ============ Content script communication ============
   async function sendMessage(action, data = {}) {
     if (!currentTab?.id) return null;
-    
+
     try {
-      const response = await chrome.tabs.sendMessage(currentTab.id, {
-        action,
-        ...data
-      });
-      return response;
+      return await chrome.tabs.sendMessage(currentTab.id, { action, ...data });
     } catch (e) {
-      console.error('Failed to send message:', e);
       statusEl.textContent = 'Error communicating with page';
       statusEl.classList.add('not-claude');
       return null;
@@ -129,63 +133,64 @@
 
   function updateStatus(response) {
     if (response && response.success) {
-      const { total, hidden } = response;
+      const { totalHeight, hiddenHeight, visibleHeight } = response;
+      // Also support old format
+      const total = totalHeight || response.total || 0;
+      const visible = visibleHeight || response.visible || total;
+      const hidden = hiddenHeight || response.hidden || 0;
+
       if (hidden > 0) {
-        statusEl.textContent = `${hidden} of ${total} messages hidden`;
+        statusEl.textContent = `${formatPixels(visible)}px / ${formatPixels(total)}px visible`;
       } else if (isCollapsed) {
-        statusEl.textContent = `${total} messages (all visible)`;
+        statusEl.textContent = `${formatPixels(total)}px (all visible)`;
       } else {
-        statusEl.textContent = `${total} messages`;
+        statusEl.textContent = `${formatPixels(total)}px total`;
       }
       statusEl.classList.remove('not-claude');
     } else {
-      statusEl.textContent = response?.error || 'No messages found';
+      statusEl.textContent = response?.error || 'No content found';
     }
   }
 
   async function applyCollapse() {
-    const response = await sendMessage('collapse', {
-      keepVisible,
-      isCollapsed
-    });
+    // Apply scale factor to maxHeight
+    const effectiveHeight = Math.round(maxHeight * scale);
+    const response = await sendMessage('collapse', { maxHeight: effectiveHeight, isCollapsed });
     updateStatus(response);
   }
 
   // ============ Initialize ============
   async function init() {
-    // Load theme first (before anything else)
     await loadTheme();
-    
-    // Get current tab
+
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     currentTab = tab;
 
-    // Check if we're on Claude.ai
     if (!tab.url?.includes('claude.ai')) {
-      statusEl.textContent = 'Open claude.ai to use this extension';
+      statusEl.textContent = 'Open claude.ai to use';
       statusEl.classList.add('not-claude');
       sliderEl.disabled = true;
+      scaleSliderEl.disabled = true;
       toggleBtn.disabled = true;
       refreshBtn.disabled = true;
       return;
     }
 
-    // Load settings and apply
     await loadSettings();
     await applyCollapse();
   }
 
   // ============ Event listeners ============
-  
-  // Theme buttons
+
+  // Theme
   themeLightBtn.addEventListener('click', () => saveTheme('light'));
   themeDarkBtn.addEventListener('click', () => saveTheme('dark'));
   themeAutoBtn.addEventListener('click', () => saveTheme('auto'));
-  
-  // Slider
+
+  // Height slider
   sliderEl.addEventListener('input', (e) => {
-    keepVisible = parseInt(e.target.value);
-    sliderValueEl.textContent = keepVisible;
+    maxHeight = parseInt(e.target.value);
+    sliderValueEl.textContent = formatPixels(maxHeight);
   });
 
   sliderEl.addEventListener('change', async () => {
@@ -193,7 +198,18 @@
     await applyCollapse();
   });
 
-  // Buttons
+  // Scale slider
+  scaleSliderEl.addEventListener('input', (e) => {
+    scale = parseFloat(e.target.value);
+    scaleValueEl.textContent = scale + 'x';
+  });
+
+  scaleSliderEl.addEventListener('change', async () => {
+    await saveSettings();
+    await applyCollapse();
+  });
+
+  // Toggle button
   toggleBtn.addEventListener('click', async () => {
     isCollapsed = !isCollapsed;
     updateToggleButton();
@@ -201,29 +217,18 @@
     await applyCollapse();
   });
 
+  // Refresh button
   refreshBtn.addEventListener('click', async () => {
     await applyCollapse();
   });
 
-  // Debug button - highlights found messages
-  const debugBtn = document.getElementById('debugBtn');
+  // Debug button
   debugBtn.addEventListener('click', async () => {
     const response = await sendMessage('debug');
     if (response?.success) {
-      statusEl.textContent = `Debug: found ${response.found} elements`;
+      statusEl.textContent = `Found ${response.found} blocks, ${formatPixels(response.scrollHeight)}px`;
     }
   });
 
-  // Scan button - scans DOM structure
-  const scanBtn = document.getElementById('scanBtn');
-  scanBtn.addEventListener('click', async () => {
-    const response = await sendMessage('scan');
-    if (response?.success) {
-      statusEl.textContent = 'Scan complete - check console';
-    }
-  });
-
-  // Start
   init();
-
 })();

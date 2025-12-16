@@ -8,225 +8,208 @@
       margin: 0;
       padding: 0;
     }
-    
+
     body {
-      width: 260px;
+      width: 240px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 13px;
       padding: 16px;
       transition: background 0.2s, color 0.2s;
     }
-    
-    /* Light mode (default) - original purple colors */
+
+    /* Light mode */
     body.light {
       background: #ffffff;
       color: #374151;
     }
-    
+
     body.light .header {
       border-bottom-color: #e5e7eb;
     }
-    
+
     body.light .header-title {
       color: #111827;
     }
-    
+
     body.light .status {
       background: #f3f4f6;
       color: #8b5cf6;
     }
-    
+
     body.light .status.not-claude {
       color: #ef4444;
     }
-    
+
     body.light .control-label {
       color: #6b7280;
     }
-    
+
     body.light input[type="range"] {
       background: #e5e7eb;
     }
-    
+
     body.light input[type="range"]::-webkit-slider-thumb {
       background: #8b5cf6;
     }
-    
-    body.light input[type="range"]::-webkit-slider-thumb:hover {
-      background: #7c3aed;
-    }
-    
+
     body.light .slider-value {
       color: #8b5cf6;
     }
-    
+
     body.light .btn-primary {
       background: #8b5cf6;
       color: #fff;
     }
-    
+
     body.light .btn-primary:hover {
       background: #7c3aed;
     }
-    
+
     body.light .btn-primary.active {
       background: #22c55e;
-      color: #fff;
     }
-    
-    body.light .btn-primary.active:hover {
-      background: #16a34a;
-    }
-    
+
     body.light .btn-secondary {
       background: #e5e7eb;
       color: #374151;
     }
-    
+
     body.light .btn-secondary:hover {
       background: #d1d5db;
     }
-    
+
     body.light .footer {
       border-top-color: #e5e7eb;
       color: #9ca3af;
     }
-    
+
     body.light .theme-btn {
       background: #f3f4f6;
       color: #6b7280;
     }
-    
+
     body.light .theme-btn:hover {
       background: #e5e7eb;
     }
-    
+
     body.light .theme-btn.active {
       background: #8b5cf6;
       color: #fff;
     }
-    
-    /* Dark mode - original purple colors */
+
+    /* Dark mode */
     body.dark {
       background: #1a1a2e;
       color: #e0e0e0;
     }
-    
+
     body.dark .header {
       border-bottom-color: #333;
     }
-    
+
     body.dark .header-title {
       color: #fff;
     }
-    
+
     body.dark .status {
       background: #0f0f1a;
       color: #a78bfa;
     }
-    
+
     body.dark .status.not-claude {
       color: #f87171;
     }
-    
+
     body.dark .control-label {
       color: #999;
     }
-    
+
     body.dark input[type="range"] {
       background: #333;
     }
-    
+
     body.dark input[type="range"]::-webkit-slider-thumb {
       background: #8b5cf6;
     }
-    
-    body.dark input[type="range"]::-webkit-slider-thumb:hover {
-      background: #a78bfa;
-    }
-    
+
     body.dark .slider-value {
       color: #8b5cf6;
     }
-    
+
     body.dark .btn-primary {
       background: #8b5cf6;
       color: white;
     }
-    
+
     body.dark .btn-primary:hover {
       background: #7c3aed;
     }
-    
+
     body.dark .btn-primary.active {
       background: #22c55e;
     }
-    
-    body.dark .btn-primary.active:hover {
-      background: #16a34a;
-    }
-    
+
     body.dark .btn-secondary {
       background: #333;
       color: #e0e0e0;
     }
-    
+
     body.dark .btn-secondary:hover {
       background: #444;
     }
-    
+
     body.dark .footer {
       border-top-color: #333;
       color: #666;
     }
-    
+
     body.dark .theme-btn {
       background: #333;
       color: #999;
     }
-    
+
     body.dark .theme-btn:hover {
       background: #444;
     }
-    
+
     body.dark .theme-btn.active {
       background: #8b5cf6;
       color: #fff;
     }
-    
+
     /* Common styles */
     .header {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 16px;
-      padding-bottom: 12px;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
       border-bottom: 1px solid;
     }
-    
+
     .header-icon {
-      width: 24px;
-      height: 24px;
+      width: 22px;
+      height: 22px;
     }
-    
+
     .header-title {
       font-weight: 600;
       font-size: 14px;
       flex: 1;
     }
-    
+
     .status {
       padding: 10px 12px;
       border-radius: 8px;
       text-align: center;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
       font-weight: 500;
     }
-    
+
     .control-group {
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
-    
+
     .control-label {
       display: block;
       font-size: 11px;
@@ -234,13 +217,13 @@
       letter-spacing: 0.5px;
       margin-bottom: 8px;
     }
-    
+
     .slider-row {
       display: flex;
       align-items: center;
       gap: 12px;
     }
-    
+
     input[type="range"] {
       flex: 1;
       height: 6px;
@@ -249,33 +232,32 @@
       border-radius: 3px;
       cursor: pointer;
     }
-    
+
     input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none;
-      appearance: none;
       width: 16px;
       height: 16px;
       border-radius: 50%;
       cursor: pointer;
-      transition: background 0.2s, transform 0.1s;
+      transition: transform 0.1s;
     }
-    
+
     input[type="range"]::-webkit-slider-thumb:hover {
       transform: scale(1.1);
     }
-    
+
     .slider-value {
-      min-width: 28px;
+      min-width: 36px;
       text-align: center;
       font-weight: 700;
-      font-size: 16px;
+      font-size: 15px;
     }
-    
+
     .buttons {
       display: flex;
       gap: 8px;
     }
-    
+
     .btn {
       flex: 1;
       padding: 10px 12px;
@@ -290,33 +272,32 @@
       justify-content: center;
       gap: 6px;
     }
-    
+
     .btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
     }
-    
+
     .footer {
-      margin-top: 16px;
-      padding-top: 12px;
+      margin-top: 14px;
+      padding-top: 10px;
       border-top: 1px solid;
       text-align: center;
       font-size: 11px;
     }
-    
+
     .footer-text {
-      margin-bottom: 10px;
+      margin-bottom: 8px;
     }
-    
-    /* Theme switcher at bottom */
+
     .theme-switcher {
       display: flex;
       gap: 4px;
     }
-    
+
     .theme-btn {
       flex: 1;
-      padding: 6px 8px;
+      padding: 5px 8px;
       border: none;
       border-radius: 6px;
       cursor: pointer;
@@ -331,36 +312,43 @@
     <img src="icon48.png" class="header-icon" alt="Claude Leash">
     <span class="header-title">Claude Leash</span>
   </div>
-  
+
   <div class="status" id="status">Checking...</div>
-  
+
   <div class="control-group">
-    <label class="control-label">Keep visible messages</label>
+    <label class="control-label">Hide anything above</label>
     <div class="slider-row">
-      <input type="range" id="slider" min="2" max="30" value="8">
-      <span class="slider-value" id="sliderValue">8</span>
+      <input type="range" id="slider" min="4000" max="40000" step="1000" value="12000">
+      <span class="slider-value" id="sliderValue">12k</span>
     </div>
   </div>
-  
+
+  <div class="control-group">
+    <label class="control-label">UI Scale (for HiDPI)</label>
+    <div class="slider-row">
+      <input type="range" id="scaleSlider" min="1" max="3" step="0.5" value="1">
+      <span class="slider-value" id="scaleValue">1x</span>
+    </div>
+  </div>
+
   <div class="buttons">
     <button class="btn btn-primary" id="toggleBtn">
       <span id="toggleIcon">▼</span>
       <span id="toggleText">Collapse</span>
     </button>
     <button class="btn btn-secondary" id="refreshBtn" title="Refresh">🔄</button>
-    <button class="btn btn-secondary" id="debugBtn" title="Debug - highlight detected messages">🔍</button>
-    <button class="btn btn-secondary" id="scanBtn" title="Scan DOM structure">📋</button>
+    <button class="btn btn-secondary" id="debugBtn" title="Debug">🔍</button>
   </div>
-  
+
   <div class="footer">
     <div class="footer-text">Keeping your context under control</div>
     <div class="theme-switcher">
-      <button class="theme-btn" id="themeLightBtn" title="Light mode">☀️</button>
-      <button class="theme-btn" id="themeDarkBtn" title="Dark mode">🌙</button>
-      <button class="theme-btn" id="themeAutoBtn" title="Follow system">Auto</button>
+      <button class="theme-btn" id="themeLightBtn" title="Light">☀️</button>
+      <button class="theme-btn" id="themeDarkBtn" title="Dark">🌙</button>
+      <button class="theme-btn" id="themeAutoBtn" title="Auto">Auto</button>
     </div>
   </div>
-  
+
   <script src="popup.js"></script>
 </body>
 </html>
