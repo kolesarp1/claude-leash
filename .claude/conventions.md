@@ -660,7 +660,7 @@ function cacheData(element, data) {
  * - Managing session state and caching
  * - Communicating with background script for badge updates
  *
- * @version 3.4.10
+ * @version 3.5.0
  * @author Claude Code AI Assistant
  */
 ```

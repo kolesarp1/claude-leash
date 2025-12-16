@@ -81,7 +81,7 @@ Input Latency           | 210ms             | 50ms           | -76%
 
 ## Technical Stack
 
-**Version:** 3.4.10
+**Version:** 3.5.0
 **Type:** Chrome Extension (Manifest v3)
 **Tech Stack:** Pure Vanilla JavaScript (no build process required)
 **Target Platforms:** claude.ai, Claude Code Web
@@ -452,7 +452,7 @@ alternative approaches that might be more resilient to Claude UI changes?
 
 ### Feature Roadmap
 
-**Current Capabilities (v3.4.10):**
+**Current Capabilities (v3.5.0):**
 - ✅ Adjustable visibility threshold (4k-40k pixels)
 - ✅ Per-platform toggles (Claude.ai, Claude Code)
 - ✅ One-click collapse/expand
@@ -780,5 +780,5 @@ Open claude.ai or code.anthropic.com
 ---
 
 **Last Updated:** 2025-12-16
-**Version:** 3.4.10
+**Version:** 3.5.0
 **Maintained by:** Claude Code AI Assistant

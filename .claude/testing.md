@@ -39,8 +39,8 @@
          └─────────────────┘
 ```
 
-**Current State**: Primarily manual testing (no automated tests yet)
-**Future**: Unit tests for detection algorithms, integration tests for Chrome APIs
+**Current State**: Unit tests implemented with Jest, E2E tests with Puppeteer
+**Coverage Goal**: 80% of core algorithms
 
 ---
 
