@@ -748,6 +748,11 @@
 
       const checkContent = () => {
         attempts++;
+
+        // Clear caches to ensure fresh detection each time
+        cachedContainer = null;
+        cachedContentParent = null;
+
         const container = getScrollContainer(true); // Force refresh
 
         if (container) {
@@ -767,10 +772,10 @@
               stableCount++;
 
               // Accept if stable AND either:
-              // 1. We have meaningful content (> 5k px), OR
-              // 2. We've waited at least 3 seconds (15 attempts) and content is truly stable
-              const hasEnoughContent = currentHeight >= minHeightForCollapse;
-              const waitedLongEnough = attempts >= 15 && stableCount >= stableThreshold;
+              // 1. We have meaningful content (> 5k px AND > 10 blocks for conversations), OR
+              // 2. We've waited at least 4 seconds (20 attempts) and content is truly stable
+              const hasEnoughContent = currentHeight >= minHeightForCollapse && children.length >= 10;
+              const waitedLongEnough = attempts >= 20 && stableCount >= stableThreshold;
 
               if (stableCount >= stableThreshold && (hasEnoughContent || waitedLongEnough)) {
                 console.log(`Claude Leash: Content ready (${children.length} blocks, ${Math.round(currentHeight/1000)}k px)`);
