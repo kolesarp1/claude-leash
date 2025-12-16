@@ -577,12 +577,12 @@
     const shouldCollapse = currentSettings.isCollapsed || (prevState && prevState.isCollapsed);
 
     if (shouldCollapse && isEnabledForCurrentInterface() && reactHydrated) {
-      // Apply collapse after content loads - wait for React to settle
-      setTimeout(() => {
+      // Wait for content to load, then apply collapse
+      waitForContent().then(() => {
         if (currentSettings.isCollapsed) {
           applyCollapse(currentSettings.maxHeight, true);
         }
-      }, 500);
+      });
     }
   }
 
@@ -722,20 +722,52 @@
     await waitForReactHydration();
     console.log('Claude Leash: React hydration complete, safe to manipulate DOM');
 
-    // Apply collapse if enabled (after hydration)
+    // Wait for actual content to appear (not just React hydration)
+    await waitForContent();
+
+    // Apply collapse if enabled (after content is ready)
     if (currentSettings.isCollapsed && isEnabledForCurrentInterface()) {
-      // Give React a moment to settle, then apply
-      setTimeout(() => {
-        applyCollapse(currentSettings.maxHeight, true);
-      }, 300);
+      applyCollapse(currentSettings.maxHeight, true);
     }
 
-    // Initial badge
-    setTimeout(() => {
-      const container = getScrollContainer();
-      const totalHeight = container ? Math.round(container.scrollHeight) : 0;
-      updateBadge(totalHeight, totalHeight, currentSettings.isCollapsed);
-    }, 500);
+    // Initial badge update
+    const container = getScrollContainer();
+    const totalHeight = container ? Math.round(container.scrollHeight) : 0;
+    updateBadge(totalHeight, totalHeight, currentSettings.isCollapsed);
+  }
+
+  // Wait for actual content to be rendered in the DOM
+  function waitForContent() {
+    return new Promise(resolve => {
+      let attempts = 0;
+      const maxAttempts = 20; // 20 * 250ms = 5 seconds max
+
+      const checkContent = () => {
+        attempts++;
+        const container = getScrollContainer(true); // Force refresh
+
+        if (container && container.scrollHeight > 500) {
+          const contentParent = getContentParent(container);
+          const children = contentParent ? getContentChildren(contentParent) : [];
+
+          if (children.length >= 1) {
+            console.log(`Claude Leash: Found content (${children.length} blocks, ${Math.round(container.scrollHeight/1000)}k px)`);
+            resolve();
+            return;
+          }
+        }
+
+        if (attempts < maxAttempts) {
+          setTimeout(checkContent, 250);
+        } else {
+          console.log('Claude Leash: Timeout waiting for content, proceeding anyway');
+          resolve();
+        }
+      };
+
+      // Start checking after a small delay
+      setTimeout(checkContent, 100);
+    });
   }
 
   init();
