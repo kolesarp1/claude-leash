@@ -736,37 +736,53 @@
     updateBadge(totalHeight, totalHeight, currentSettings.isCollapsed);
   }
 
-  // Wait for actual content to be rendered in the DOM
+  // Wait for actual content to be rendered AND stabilized in the DOM
   function waitForContent() {
     return new Promise(resolve => {
       let attempts = 0;
-      const maxAttempts = 20; // 20 * 250ms = 5 seconds max
+      const maxAttempts = 30; // 30 * 200ms = 6 seconds max
+      let lastScrollHeight = 0;
+      let stableCount = 0;
+      const stableThreshold = 3; // Need 3 consecutive stable readings
 
       const checkContent = () => {
         attempts++;
         const container = getScrollContainer(true); // Force refresh
 
-        if (container && container.scrollHeight > 500) {
+        if (container) {
+          const currentHeight = container.scrollHeight;
           const contentParent = getContentParent(container);
           const children = contentParent ? getContentChildren(contentParent) : [];
 
-          if (children.length >= 1) {
-            console.log(`Claude Leash: Found content (${children.length} blocks, ${Math.round(container.scrollHeight/1000)}k px)`);
-            resolve();
-            return;
+          // Check if content has stabilized (height stopped changing)
+          if (currentHeight > 500 && children.length >= 1) {
+            if (currentHeight === lastScrollHeight) {
+              stableCount++;
+              if (stableCount >= stableThreshold) {
+                console.log(`Claude Leash: Content stabilized (${children.length} blocks, ${Math.round(currentHeight/1000)}k px)`);
+                resolve();
+                return;
+              }
+            } else {
+              stableCount = 0; // Reset if height changed
+            }
+            lastScrollHeight = currentHeight;
           }
         }
 
         if (attempts < maxAttempts) {
-          setTimeout(checkContent, 250);
+          setTimeout(checkContent, 200);
         } else {
-          console.log('Claude Leash: Timeout waiting for content, proceeding anyway');
+          const container = getScrollContainer();
+          const contentParent = container ? getContentParent(container) : null;
+          const children = contentParent ? getContentChildren(contentParent) : [];
+          console.log(`Claude Leash: Timeout, proceeding with current content (${children.length} blocks, ${Math.round((container?.scrollHeight || 0)/1000)}k px)`);
           resolve();
         }
       };
 
       // Start checking after a small delay
-      setTimeout(checkContent, 100);
+      setTimeout(checkContent, 200);
     });
   }
 
