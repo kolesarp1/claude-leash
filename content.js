@@ -129,8 +129,7 @@
         DEBUG_MODE = result[STORAGE_KEY].debugMode === true;
       }
     } catch (e) {
-      // Can't use debugLog here as it might not be loaded yet
-      console.log('Claude Leash: Failed to load settings:', e.message);
+      // Silent fail - settings will use defaults
     }
   }
 
@@ -533,7 +532,7 @@
           updatePlaceholder();
         }
 
-        console.log(`Claude Leash: Hidden ${hiddenNodes.length} blocks (${Math.round(hiddenHeight/1000)}k px)`);
+        debugLog(`Hidden ${hiddenNodes.length} blocks (${Math.round(hiddenHeight/1000)}k px)`);
       }
 
       // Update content cache with TOTAL height (before hiding)
@@ -586,7 +585,7 @@
       data.node.classList.remove('claude-leash-hidden');
     });
 
-    console.log(`Claude Leash: Restored ${hiddenNodes.length} blocks`);
+    debugLog(`Restored ${hiddenNodes.length} blocks`);
 
     hiddenNodes = [];
     totalHiddenHeight = 0;
@@ -658,7 +657,7 @@
     const newSessionId = getSessionId();
     if (newSessionId === currentSessionId) return;
 
-    console.log(`Claude Leash: Session change ${currentSessionId} -> ${newSessionId}`);
+    debugLog(`Session change ${currentSessionId} -> ${newSessionId}`);
 
     // Cancel any pending detection from previous session
     if (currentAbortController) {
@@ -695,7 +694,7 @@
     if (cachedContent) {
       // Fast path: we have cached content info for this session
       // Wait up to 1.5s for content to reach at least 50% of cached height
-      console.log(`Claude Leash: Trying fast path for cached session (${Math.round(cachedContent.scrollHeight/1000)}k px cached)`);
+      debugLog(`Trying fast path for cached session (${Math.round(cachedContent.scrollHeight/1000)}k px cached)`);
 
       const fastPathStart = Date.now();
       const fastPathTimeout = 1500; // 1.5 seconds max
@@ -720,7 +719,7 @@
 
           if (heightRatio >= minMatchThreshold) {
             // Content has loaded enough - apply collapse immediately
-            console.log(`Claude Leash: Fast path hit! (${Math.round(currentHeight/1000)}k / ${Math.round(cachedContent.scrollHeight/1000)}k = ${(heightRatio * 100).toFixed(0)}%)`);
+            debugLog(`Fast path hit! (${Math.round(currentHeight/1000)}k / ${Math.round(cachedContent.scrollHeight/1000)}k = ${(heightRatio * 100).toFixed(0)}%)`);
             applyCollapse(currentSettings.maxHeight, true);
             return;
           }
@@ -728,7 +727,7 @@
       }
 
       // Fast path timed out, fall through to slow path
-      console.log(`Claude Leash: Fast path timeout, using slow path`);
+      debugLog(`Fast path timeout, using slow path`);
     }
 
     // Slow path: wait for content to load and stabilize
@@ -834,7 +833,7 @@
               const waitedLongEnough = attempts >= 20 && stableCount >= STABLE_THRESHOLD;
 
               if (stableCount >= STABLE_THRESHOLD && (hasEnoughContent || waitedLongEnough)) {
-                console.log(`Claude Leash: Content ready (${children.length} blocks, ${Math.round(currentHeight/1000)}k px)`);
+                debugLog(`Content ready (${children.length} blocks, ${Math.round(currentHeight/1000)}k px)`);
 
                 // Update content cache
                 sessionContentCache.set(currentSessionId, {
@@ -859,7 +858,7 @@
           const container = getScrollContainer();
           const contentParent = container ? getContentParent(container) : null;
           const children = contentParent ? getContentChildren(contentParent) : [];
-          console.log(`Claude Leash: Timeout, proceeding with current content (${children.length} blocks, ${Math.round((container?.scrollHeight || 0)/1000)}k px)`);
+          debugLog(`Timeout, proceeding with current content (${children.length} blocks, ${Math.round((container?.scrollHeight || 0)/1000)}k px)`);
           resolve();
         }
       };
@@ -953,7 +952,7 @@
 
         case 'setDebugMode':
           DEBUG_MODE = message.enabled === true;
-          console.log(`Claude Leash: Debug mode ${DEBUG_MODE ? 'enabled' : 'disabled'}`);
+          debugLog(`Debug mode ${DEBUG_MODE ? 'enabled' : 'disabled'}`);
           sendResponse({ success: true, debugMode: DEBUG_MODE });
           break;
 
@@ -978,7 +977,7 @@
 
     // Wait for React to finish hydrating before manipulating DOM
     await waitForReactHydration();
-    console.log('Claude Leash: React hydration complete, safe to manipulate DOM');
+    debugLog('React hydration complete, safe to manipulate DOM');
 
     // Initialize abort controller
     currentAbortController = new AbortController();
@@ -1004,5 +1003,4 @@
   }
 
   init();
-  console.log('Claude Leash: Loaded (waiting for React hydration)');
 })();
