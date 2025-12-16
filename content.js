@@ -640,25 +640,35 @@
 
     if (cachedContent) {
       // Fast path: we have cached content info for this session
-      debugLog(`Fast path: cached content for session ${newSessionId}`, cachedContent);
+      // Wait up to 1.5s for content to reach at least 50% of cached height
+      console.log(`Claude Leash: Trying fast path for cached session (${Math.round(cachedContent.scrollHeight/1000)}k px cached)`);
 
-      // Wait a short time for DOM to update
-      await sleep(100);
-      if (signal.aborted) return;
+      const fastPathStart = Date.now();
+      const fastPathTimeout = 1500; // 1.5 seconds max
+      const minMatchThreshold = 0.5; // Accept 50% match for fast path
 
-      // Check if current content matches cache (within threshold)
-      const container = getScrollContainer(true);
-      if (container) {
-        const currentHeight = container.scrollHeight;
-        const heightMatch = currentHeight / cachedContent.scrollHeight;
+      while (Date.now() - fastPathStart < fastPathTimeout) {
+        if (signal.aborted) return;
 
-        if (heightMatch >= CACHE_MATCH_THRESHOLD && heightMatch <= (1 / CACHE_MATCH_THRESHOLD)) {
-          // Content matches cache - apply collapse immediately
-          debugLog(`Cache hit! Height match: ${(heightMatch * 100).toFixed(0)}%`);
-          applyCollapse(currentSettings.maxHeight, true);
-          return;
+        await sleep(100);
+
+        cachedContainer = null; // Clear cache for fresh detection
+        const container = getScrollContainer(true);
+        if (container) {
+          const currentHeight = container.scrollHeight;
+          const heightRatio = currentHeight / cachedContent.scrollHeight;
+
+          if (heightRatio >= minMatchThreshold) {
+            // Content has loaded enough - apply collapse immediately
+            console.log(`Claude Leash: Fast path hit! (${Math.round(currentHeight/1000)}k / ${Math.round(cachedContent.scrollHeight/1000)}k = ${(heightRatio * 100).toFixed(0)}%)`);
+            applyCollapse(currentSettings.maxHeight, true);
+            return;
+          }
         }
       }
+
+      // Fast path timed out, fall through to slow path
+      console.log(`Claude Leash: Fast path timeout, using slow path`);
     }
 
     // Slow path: wait for content to load and stabilize
