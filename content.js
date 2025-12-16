@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.10
+// Claude Leash - Content Script v3.5.0
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -32,6 +32,69 @@
   const MAX_CONTENT_DEPTH = 15;
   const MAX_SESSIONS_STORED = 50;
   const CACHE_MATCH_THRESHOLD = 0.7; // 70% match for fast path
+
+  // ============ DOM Selectors Configuration ============
+  // Future-proof: Update these when Claude changes its DOM structure
+  const DOM_SELECTORS = {
+    // Scroll container detection
+    container: {
+      // Primary: Tailwind overflow classes
+      primary: '[class*="overflow-y-auto"], [class*="overflow-auto"], [class*="overflow-y-scroll"]',
+      // Fallback: Any scrollable div (checked via getComputedStyle)
+      fallback: 'div'
+    },
+    // Sidebar exclusion patterns
+    sidebar: {
+      // Class patterns that indicate sidebar
+      classPatterns: ['bg-bg-', 'border-r-[', 'border-r ', 'flex-shrink-0'],
+      // Position-based: left edge + narrow width
+      maxLeftPosition: 50,
+      maxWidth: 800,
+      viewportWidthRatio: 0.6
+    },
+    // Content children filtering
+    content: {
+      validTag: 'DIV',
+      minHeight: 10,
+      minWidth: 50
+    }
+  };
+
+  // ============ Message Validation ============
+  // Validate incoming messages from popup/background
+  function validateMessage(message) {
+    if (!message || typeof message !== 'object') {
+      return { valid: false, error: 'Invalid message format' };
+    }
+    if (!message.action || typeof message.action !== 'string') {
+      return { valid: false, error: 'Missing or invalid action' };
+    }
+    // Validate numeric parameters
+    if (message.maxHeight !== undefined) {
+      if (typeof message.maxHeight !== 'number' || message.maxHeight < 1000 || message.maxHeight > 200000) {
+        return { valid: false, error: 'maxHeight must be number between 1000-200000' };
+      }
+    }
+    if (message.maxLines !== undefined) {
+      if (typeof message.maxLines !== 'number' || message.maxLines < 1 || message.maxLines > 10000) {
+        return { valid: false, error: 'maxLines must be number between 1-10000' };
+      }
+    }
+    // Validate boolean parameters
+    if (message.isCollapsed !== undefined && typeof message.isCollapsed !== 'boolean') {
+      return { valid: false, error: 'isCollapsed must be boolean' };
+    }
+    if (message.enableClaudeAi !== undefined && typeof message.enableClaudeAi !== 'boolean') {
+      return { valid: false, error: 'enableClaudeAi must be boolean' };
+    }
+    if (message.enableClaudeCode !== undefined && typeof message.enableClaudeCode !== 'boolean') {
+      return { valid: false, error: 'enableClaudeCode must be boolean' };
+    }
+    if (message.enabled !== undefined && typeof message.enabled !== 'boolean') {
+      return { valid: false, error: 'enabled must be boolean' };
+    }
+    return { valid: true };
+  }
 
   // Debug mode (loaded from storage, default false)
   let DEBUG_MODE = false;
@@ -232,30 +295,26 @@
       if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) return 0;
       if (scrollHeight <= MIN_SCROLL_HEIGHT) return 0;
 
-      // Exclude sidebar panels - multiple detection strategies
-      const hasBgBg = classes.indexOf('bg-bg-') !== -1;
-      const hasBorderR = classes.indexOf('border-r-[') !== -1 || classes.indexOf('border-r ') !== -1;
-      const hasFlexShrink = classes.indexOf('flex-shrink-0') !== -1;
-      const isNarrowLeftPanel = rect.left < 50 && rect.width < 800 && rect.width < window.innerWidth * 0.6;
+      // Exclude sidebar panels - using configurable patterns
+      const sidebarConfig = DOM_SELECTORS.sidebar;
+      const hasSidebarClass = sidebarConfig.classPatterns.some(pattern => classes.indexOf(pattern) !== -1);
+      const isNarrowLeftPanel = rect.left < sidebarConfig.maxLeftPosition &&
+                                rect.width < sidebarConfig.maxWidth &&
+                                rect.width < window.innerWidth * sidebarConfig.viewportWidthRatio;
 
       // Log what we're checking for sidebar detection
-      if (hasBgBg || hasBorderR || hasFlexShrink || isNarrowLeftPanel) {
-        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, bgBg=${hasBgBg}, borderR=${hasBorderR}, flexShrink=${hasFlexShrink}, narrowLeft=${isNarrowLeftPanel}`);
+      if (hasSidebarClass || isNarrowLeftPanel) {
+        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, hasSidebarClass=${hasSidebarClass}, narrowLeft=${isNarrowLeftPanel}`);
       }
 
       // 1. Class-based: Claude Code Web sidebar has distinctive classes
-      if (hasBgBg || hasBorderR) {
-        debugLog(`EXCLUDED by class: ${rect.width}px wide`);
+      if (hasSidebarClass) {
+        debugLog(`EXCLUDED by class pattern: ${rect.width}px wide`);
         return 0;
       }
       // 2. Position-based: left-edge panels narrower than main content
       if (isNarrowLeftPanel) {
         debugLog(`EXCLUDED by position: ${rect.left}px left, ${rect.width}px wide`);
-        return 0;
-      }
-      // 3. Flex-shrink sidebar pattern (fixed-width sidebars under 800px)
-      if (hasFlexShrink && rect.width < 800) {
-        debugLog(`EXCLUDED by flex-shrink: ${rect.width}px wide`);
         return 0;
       }
 
@@ -271,7 +330,7 @@
     }
 
     // Strategy 1: Try CSS class-based detection (Tailwind overflow classes)
-    const overflowContainers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"], [class*="overflow-y-scroll"]');
+    const overflowContainers = document.querySelectorAll(DOM_SELECTORS.container.primary);
 
     for (const container of overflowContainers) {
       const score = scoreContainer(container);
@@ -283,7 +342,7 @@
 
     // Strategy 2: Scan divs with getComputedStyle (limited, for non-Tailwind containers)
     if (!best || bestScore < 10000) {
-      const allDivs = document.querySelectorAll('div');
+      const allDivs = document.querySelectorAll(DOM_SELECTORS.container.fallback);
       const maxDivsToCheck = Math.min(allDivs.length, 400);
 
       for (let i = 0; i < maxDivsToCheck; i++) {
@@ -365,12 +424,13 @@
 
   function getContentChildren(contentParent) {
     if (!contentParent) return [];
+    const contentConfig = DOM_SELECTORS.content;
     return [...contentParent.children].filter(c => {
-      if (c.tagName !== 'DIV') return false;
+      if (c.tagName !== contentConfig.validTag) return false;
       if (c.id === PLACEHOLDER_ID) return false;
       if (c.classList.contains('claude-leash-hidden')) return false;
       const rect = c.getBoundingClientRect();
-      return rect.height > 10 && rect.width > 50;
+      return rect.height > contentConfig.minHeight && rect.width > contentConfig.minWidth;
     });
   }
 
@@ -899,6 +959,14 @@
   // ============ Message Handler ============
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Validate incoming message
+    const validation = validateMessage(message);
+    if (!validation.valid) {
+      console.warn('Claude Leash: Invalid message received:', validation.error);
+      sendResponse({ success: false, error: validation.error });
+      return true;
+    }
+
     try {
       switch (message.action) {
         case 'collapse':
