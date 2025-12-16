@@ -11,6 +11,7 @@
   let scale = 1;
   let enableClaudeAi = false;
   let enableClaudeCode = true;
+  let debugMode = false;
   let currentTheme = 'light';
 
   // Elements
@@ -26,6 +27,7 @@
   const debugBtn = document.getElementById('debugBtn');
   const enableClaudeAiEl = document.getElementById('enableClaudeAi');
   const enableClaudeCodeEl = document.getElementById('enableClaudeCode');
+  const debugModeEl = document.getElementById('debugMode');
   const themeLightBtn = document.getElementById('themeLightBtn');
   const themeDarkBtn = document.getElementById('themeDarkBtn');
   const themeAutoBtn = document.getElementById('themeAutoBtn');
@@ -96,6 +98,7 @@
         // Interface toggles - Claude Code ON by default, Claude.ai OFF by default
         enableClaudeCode = result[STORAGE_KEY].enableClaudeCode !== false;
         enableClaudeAi = result[STORAGE_KEY].enableClaudeAi === true;
+        debugMode = result[STORAGE_KEY].debugMode === true;
       }
       sliderEl.value = maxHeight;
       sliderValueEl.textContent = formatPixels(maxHeight);
@@ -103,6 +106,7 @@
       scaleValueEl.textContent = scale + 'x';
       enableClaudeAiEl.checked = enableClaudeAi;
       enableClaudeCodeEl.checked = enableClaudeCode;
+      debugModeEl.checked = debugMode;
       updateToggleButton();
     } catch (e) {}
   }
@@ -110,7 +114,7 @@
   async function saveSettings() {
     try {
       await chrome.storage.local.set({
-        [STORAGE_KEY]: { maxHeight, scale, isCollapsed, enableClaudeAi, enableClaudeCode }
+        [STORAGE_KEY]: { maxHeight, scale, isCollapsed, enableClaudeAi, enableClaudeCode, debugMode }
       });
     } catch (e) {}
   }
@@ -262,6 +266,13 @@
     enableClaudeCode = enableClaudeCodeEl.checked;
     await saveSettings();
     await applyCollapse();
+  });
+
+  // Debug mode checkbox
+  debugModeEl.addEventListener('change', async () => {
+    debugMode = debugModeEl.checked;
+    await saveSettings();
+    await sendMessage('setDebugMode', { enabled: debugMode });
   });
 
   init();

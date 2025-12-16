@@ -33,8 +33,8 @@
   const MAX_SESSIONS_STORED = 50;
   const CACHE_MATCH_THRESHOLD = 0.7; // 70% match for fast path
 
-  // Debug mode (set to true to enable verbose logging)
-  const DEBUG_MODE = true;
+  // Debug mode (loaded from storage, default false)
+  let DEBUG_MODE = false;
 
   function debugLog(...args) {
     if (DEBUG_MODE) {
@@ -125,9 +125,12 @@
         // Claude Code ON by default, Claude.ai OFF by default
         currentSettings.enableClaudeCode = result[STORAGE_KEY].enableClaudeCode !== false;
         currentSettings.enableClaudeAi = result[STORAGE_KEY].enableClaudeAi === true;
+        // Debug mode OFF by default
+        DEBUG_MODE = result[STORAGE_KEY].debugMode === true;
       }
     } catch (e) {
-      debugLog('Failed to load settings:', e.message);
+      // Can't use debugLog here as it might not be loaded yet
+      console.log('Claude Leash: Failed to load settings:', e.message);
     }
   }
 
@@ -946,6 +949,12 @@
         case 'restore':
           restoreAll();
           sendResponse({ success: true });
+          break;
+
+        case 'setDebugMode':
+          DEBUG_MODE = message.enabled === true;
+          console.log(`Claude Leash: Debug mode ${DEBUG_MODE ? 'enabled' : 'disabled'}`);
+          sendResponse({ success: true, debugMode: DEBUG_MODE });
           break;
 
         default:
