@@ -7,7 +7,7 @@
 
   let currentTab = null;
   let isCollapsed = false;
-  let maxHeight = 12000; // pixels
+  let maxHeight = 10000; // pixels
   let scale = 1;
   let enableClaudeAi = false;
   let enableClaudeCode = true;

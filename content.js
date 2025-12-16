@@ -44,7 +44,7 @@
 
   // ============ State ============
   let currentSettings = {
-    maxHeight: 12000,
+    maxHeight: 10000,
     isCollapsed: false,
     enableClaudeAi: false,
     enableClaudeCode: true
