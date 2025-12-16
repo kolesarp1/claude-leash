@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.9
+// Claude Leash - Content Script v3.4.10
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -233,19 +233,29 @@
       if (scrollHeight <= MIN_SCROLL_HEIGHT) return 0;
 
       // Exclude sidebar panels - multiple detection strategies
+      const hasBgBg = classes.indexOf('bg-bg-') !== -1;
+      const hasBorderR = classes.indexOf('border-r-[') !== -1 || classes.indexOf('border-r ') !== -1;
+      const hasFlexShrink = classes.indexOf('flex-shrink-0') !== -1;
+      const isNarrowLeftPanel = rect.left < 50 && rect.width < 800 && rect.width < window.innerWidth * 0.6;
+
+      // Log what we're checking for sidebar detection
+      if (hasBgBg || hasBorderR || hasFlexShrink || isNarrowLeftPanel) {
+        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, bgBg=${hasBgBg}, borderR=${hasBorderR}, flexShrink=${hasFlexShrink}, narrowLeft=${isNarrowLeftPanel}`);
+      }
+
       // 1. Class-based: Claude Code Web sidebar has distinctive classes
-      if (classes.includes('bg-bg-') || classes.includes('border-r-[') || classes.includes('border-r ')) {
-        debugLog(`Excluded sidebar by class: ${rect.width}px wide, classes=${classes.slice(0,60)}`);
+      if (hasBgBg || hasBorderR) {
+        debugLog(`EXCLUDED by class: ${rect.width}px wide`);
         return 0;
       }
-      // 2. Position-based: left-edge panels narrower than main content (< 800px at left edge)
-      if (rect.left < 50 && rect.width < 800 && rect.width < window.innerWidth * 0.6) {
-        debugLog(`Excluded sidebar by position: ${rect.left}px left, ${rect.width}px wide`);
+      // 2. Position-based: left-edge panels narrower than main content
+      if (isNarrowLeftPanel) {
+        debugLog(`EXCLUDED by position: ${rect.left}px left, ${rect.width}px wide`);
         return 0;
       }
-      // 3. Flex-shrink sidebar pattern (fixed-width sidebars)
-      if (classes.includes('flex-shrink-0') && rect.width < 800) {
-        debugLog(`Excluded sidebar by flex-shrink: ${rect.width}px wide`);
+      // 3. Flex-shrink sidebar pattern (fixed-width sidebars under 800px)
+      if (hasFlexShrink && rect.width < 800) {
+        debugLog(`EXCLUDED by flex-shrink: ${rect.width}px wide`);
         return 0;
       }
 
