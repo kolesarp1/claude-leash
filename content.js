@@ -214,37 +214,47 @@
       }
     }
 
-    // Behavior-based detection: find elements with overflow-y: auto or scroll
-    // Limit to first 200 divs to avoid freezing on complex pages
-    const allDivs = document.querySelectorAll('div');
-    const maxDivsToCheck = Math.min(allDivs.length, 200);
+    // Strategy 1: Try CSS class-based detection first (faster, more reliable)
+    const overflowContainers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"], [style*="overflow"]');
     let best = null;
     let bestScrollHeight = 0;
 
-    for (let i = 0; i < maxDivsToCheck; i++) {
-      const container = allDivs[i];
-
-      // Quick check: skip if element is too small (avoid getComputedStyle)
+    for (const container of overflowContainers) {
       if (container.scrollHeight <= MIN_SCROLL_HEIGHT) continue;
 
       const rect = container.getBoundingClientRect();
       if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) continue;
-
-      // Skip sidebar elements
       if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) continue;
-
-      // Now check overflow (expensive call)
-      const style = getComputedStyle(container);
-      const overflowY = style.overflowY;
-
-      if (overflowY !== 'auto' && overflowY !== 'scroll') continue;
 
       if (container.scrollHeight > bestScrollHeight) {
         best = container;
         bestScrollHeight = container.scrollHeight;
+        if (bestScrollHeight > 20000) break; // Found a very large container
+      }
+    }
 
-        // Early exit if we found a large enough container
-        if (bestScrollHeight > 10000) break;
+    // Strategy 2: If no good candidate found, scan divs (limited)
+    if (!best || bestScrollHeight < MIN_SCROLL_HEIGHT) {
+      const allDivs = document.querySelectorAll('div');
+      const maxDivsToCheck = Math.min(allDivs.length, 300);
+
+      for (let i = 0; i < maxDivsToCheck; i++) {
+        const container = allDivs[i];
+        if (container.scrollHeight <= MIN_SCROLL_HEIGHT) continue;
+
+        const rect = container.getBoundingClientRect();
+        if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) continue;
+        if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) continue;
+
+        // Only call getComputedStyle if this could be a better candidate
+        if (container.scrollHeight > bestScrollHeight) {
+          const style = getComputedStyle(container);
+          if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+            best = container;
+            bestScrollHeight = container.scrollHeight;
+            if (bestScrollHeight > 20000) break;
+          }
+        }
       }
     }
 
