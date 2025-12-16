@@ -224,11 +224,15 @@
     function scoreContainer(container) {
       const rect = container.getBoundingClientRect();
       const scrollHeight = container.scrollHeight;
+      const classes = container.className || '';
 
       // Must be visible and reasonably sized
       if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) return 0;
       if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) return 0;
       if (scrollHeight <= MIN_SCROLL_HEIGHT) return 0;
+
+      // Exclude sidebar panels (Claude Code Web sidebar has these classes)
+      if (classes.includes('bg-bg-') || classes.includes('border-r-[') || classes.includes('border-r ')) return 0;
 
       // Score based on: scrollHeight + bonus for filling viewport
       let score = scrollHeight;
