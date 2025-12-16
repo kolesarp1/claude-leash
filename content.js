@@ -34,7 +34,7 @@
   const CACHE_MATCH_THRESHOLD = 0.7; // 70% match for fast path
 
   // Debug mode (set to true to enable verbose logging)
-  const DEBUG_MODE = false;
+  const DEBUG_MODE = true;
 
   function debugLog(...args) {
     if (DEBUG_MODE) {
@@ -280,7 +280,10 @@
 
     if (best) {
       cachedContainer = best;
-      debugLog(`Found container: ${best.scrollHeight}px, score=${bestScore}`);
+      const rect = best.getBoundingClientRect();
+      debugLog(`Found container: ${best.scrollHeight}px scroll, ${Math.round(rect.height)}px visible, score=${bestScore}, classes=${best.className.slice(0,50)}`);
+    } else {
+      debugLog('No container found!');
     }
     return cachedContainer;
   }
@@ -321,6 +324,11 @@
     }
 
     cachedContentParent = bestParent;
+    if (bestParent) {
+      debugLog(`Found content parent at depth with ${bestChildCount} children, classes=${bestParent.className.slice(0,50)}`);
+    } else {
+      debugLog('No content parent found!');
+    }
     return bestParent;
   }
 
