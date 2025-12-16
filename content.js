@@ -740,10 +740,11 @@
   function waitForContent() {
     return new Promise(resolve => {
       let attempts = 0;
-      const maxAttempts = 30; // 30 * 200ms = 6 seconds max
+      const maxAttempts = 40; // 40 * 200ms = 8 seconds max
       let lastScrollHeight = 0;
       let stableCount = 0;
       const stableThreshold = 3; // Need 3 consecutive stable readings
+      const minHeightForCollapse = 5000; // Minimum 5k px to consider "real" content
 
       const checkContent = () => {
         attempts++;
@@ -754,12 +755,25 @@
           const contentParent = getContentParent(container);
           const children = contentParent ? getContentChildren(contentParent) : [];
 
+          // Log progress for debugging
+          if (attempts % 5 === 0) {
+            console.log(`Claude Leash: Checking content... (${children.length} blocks, ${Math.round(currentHeight/1000)}k px, attempt ${attempts})`);
+          }
+
           // Check if content has stabilized (height stopped changing)
+          // AND we have meaningful content (>5k px) OR we've waited long enough
           if (currentHeight > 500 && children.length >= 1) {
             if (currentHeight === lastScrollHeight) {
               stableCount++;
-              if (stableCount >= stableThreshold) {
-                console.log(`Claude Leash: Content stabilized (${children.length} blocks, ${Math.round(currentHeight/1000)}k px)`);
+
+              // Accept if stable AND either:
+              // 1. We have meaningful content (> 5k px), OR
+              // 2. We've waited at least 3 seconds (15 attempts) and content is truly stable
+              const hasEnoughContent = currentHeight >= minHeightForCollapse;
+              const waitedLongEnough = attempts >= 15 && stableCount >= stableThreshold;
+
+              if (stableCount >= stableThreshold && (hasEnoughContent || waitedLongEnough)) {
+                console.log(`Claude Leash: Content ready (${children.length} blocks, ${Math.round(currentHeight/1000)}k px)`);
                 resolve();
                 return;
               }
