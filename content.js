@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.0
+// Claude Leash - Content Script v3.4.9
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -224,15 +224,30 @@
     function scoreContainer(container) {
       const rect = container.getBoundingClientRect();
       const scrollHeight = container.scrollHeight;
-      const classes = container.className || '';
+      // Ensure className is a string (SVG elements use SVGAnimatedString)
+      const classes = String(container.className || '');
 
       // Must be visible and reasonably sized
       if (rect.width < MIN_CONTAINER_WIDTH || rect.height < MIN_CONTAINER_HEIGHT) return 0;
       if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) return 0;
       if (scrollHeight <= MIN_SCROLL_HEIGHT) return 0;
 
-      // Exclude sidebar panels (Claude Code Web sidebar has these classes)
-      if (classes.includes('bg-bg-') || classes.includes('border-r-[') || classes.includes('border-r ')) return 0;
+      // Exclude sidebar panels - multiple detection strategies
+      // 1. Class-based: Claude Code Web sidebar has distinctive classes
+      if (classes.includes('bg-bg-') || classes.includes('border-r-[') || classes.includes('border-r ')) {
+        debugLog(`Excluded sidebar by class: ${rect.width}px wide, classes=${classes.slice(0,60)}`);
+        return 0;
+      }
+      // 2. Position-based: left-edge panels narrower than main content (< 800px at left edge)
+      if (rect.left < 50 && rect.width < 800 && rect.width < window.innerWidth * 0.6) {
+        debugLog(`Excluded sidebar by position: ${rect.left}px left, ${rect.width}px wide`);
+        return 0;
+      }
+      // 3. Flex-shrink sidebar pattern (fixed-width sidebars)
+      if (classes.includes('flex-shrink-0') && rect.width < 800) {
+        debugLog(`Excluded sidebar by flex-shrink: ${rect.width}px wide`);
+        return 0;
+      }
 
       // Score based on: scrollHeight + bonus for filling viewport
       let score = scrollHeight;
