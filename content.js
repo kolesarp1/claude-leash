@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.11
+// Claude Leash - Content Script v3.4.12
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -232,6 +232,14 @@
       if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) return 0;
       if (scrollHeight <= MIN_SCROLL_HEIGHT) return 0;
 
+      // CRITICAL: Main content area must be at least 50% of viewport width
+      // This prevents selecting narrow nested scrollable containers
+      const viewportWidth = window.innerWidth;
+      if (rect.width < viewportWidth * 0.5) {
+        debugLog(`EXCLUDED by min width: ${rect.width}px < 50% of ${viewportWidth}px viewport`);
+        return 0;
+      }
+
       // Exclude sidebar panels - multiple detection strategies
       const hasBgBg = classes.indexOf('bg-bg-') !== -1;
       const hasBorderR = classes.indexOf('border-r-[') !== -1 || classes.indexOf('border-r ') !== -1;
@@ -275,8 +283,7 @@
       if (heightRatio > 0.7) score += 20000;
 
       // Width bonus: strongly prefer wider containers (main content vs sidebar)
-      // Main content is typically 50%+ of viewport width
-      const viewportWidth = window.innerWidth;
+      // Main content is typically 50%+ of viewport width (viewportWidth declared above)
       const widthRatio = rect.width / viewportWidth;
       if (widthRatio > 0.4) score += 15000; // Significant bonus for wide containers
       if (widthRatio > 0.5) score += 25000; // Big bonus for main content width
