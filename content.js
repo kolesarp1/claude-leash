@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.12
+// Claude Leash - Content Script v3.4.13
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -232,11 +232,16 @@
       if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) return 0;
       if (scrollHeight <= MIN_SCROLL_HEIGHT) return 0;
 
-      // CRITICAL: Main content area must be at least 50% of viewport width
-      // This prevents selecting narrow nested scrollable containers
+      // CRITICAL: Main content area width requirements
+      // Cross-device compatible: works on laptops from 1024px to 4K displays
+      // - Must be at least 40% of viewport (catches nested containers on large screens)
+      // - Must be at least 500px absolute (safety floor for tiny viewports)
       const viewportWidth = window.innerWidth;
-      if (rect.width < viewportWidth * 0.5) {
-        debugLog(`EXCLUDED by min width: ${rect.width}px < 50% of ${viewportWidth}px viewport`);
+      const minWidthPercent = viewportWidth * 0.4;
+      const minWidthAbsolute = 500;
+      const minWidth = Math.max(minWidthPercent, minWidthAbsolute);
+      if (rect.width < minWidth) {
+        debugLog(`EXCLUDED by min width: ${rect.width}px < ${Math.round(minWidth)}px (40% of ${viewportWidth}px or 500px floor)`);
         return 0;
       }
 

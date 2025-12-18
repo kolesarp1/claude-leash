@@ -8,6 +8,11 @@ Chrome extension that hides old messages on Claude.ai and Claude Code Web using 
 **No build system** - raw JS files loaded directly
 **No test framework** - manual testing via Debug mode in popup
 
+### Project Goals
+1. **Cross-device compatibility** - Must work on laptops from 1024px to 4K displays
+2. **Zero configuration** - Works out of the box on Claude Code Web
+3. **Non-destructive** - CSS hiding only, no DOM mutations that break React
+
 ## Architecture
 
 ```
@@ -57,10 +62,18 @@ score = scrollHeight
 ```
 
 ### Exclusion Rules (checked before scoring)
-1. **Width < 50% viewport** → excluded (prevents narrow nested containers)
+1. **Width < max(40% viewport, 500px)** → excluded (cross-device compatible threshold)
 2. **Class contains `bg-bg-` or `border-r`** → excluded (sidebar classes)
 3. **Left edge < 50px AND width < 800px** → excluded (left panel)
 4. **Has `flex-shrink-0` AND width < 800px** → excluded (fixed sidebar)
+
+**Width threshold examples:**
+| Screen | 40% Threshold | 500px Floor | Effective Min |
+|--------|---------------|-------------|---------------|
+| 1920px | 768px | 500px | 768px |
+| 1440px | 576px | 500px | 576px |
+| 1280px | 512px | 500px | 512px |
+| 1024px | 410px | 500px | 500px |
 
 ### Debugging Container Issues
 
@@ -309,8 +322,9 @@ if (isMyNewPattern) {
 
 | Version | Bug | Root Cause | Fix |
 |---------|-----|------------|-----|
-| v3.4.11 | Sidebar selected instead of main content | No width preference in scoring | Added width bonuses (+50k for wide containers) |
+| v3.4.13 | 50% threshold too aggressive for small screens | Fixed percentage didn't scale for laptops | Changed to max(40%, 500px) for cross-device support |
 | v3.4.12 | 718px nested container selected | Large scrollHeight dominated scoring | Added 50% viewport minimum width requirement |
+| v3.4.11 | Sidebar selected instead of main content | No width preference in scoring | Added width bonuses (+50k for wide containers) |
 | v3.4.3 | Page freeze on complex sessions | Checking all divs with getComputedStyle | Limited to 400 divs, early exit on good match |
 | v3.4.1 | Cache stored wrong height | Used container.scrollHeight after hiding | Use totalHeight before hiding |
 
