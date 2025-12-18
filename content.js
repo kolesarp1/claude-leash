@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.10
+// Claude Leash - Content Script v3.4.11
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -237,10 +237,12 @@
       const hasBorderR = classes.indexOf('border-r-[') !== -1 || classes.indexOf('border-r ') !== -1;
       const hasFlexShrink = classes.indexOf('flex-shrink-0') !== -1;
       const isNarrowLeftPanel = rect.left < 50 && rect.width < 800 && rect.width < window.innerWidth * 0.6;
+      // Additional: containers less than 40% of viewport width at left edge are likely sidebars
+      const isSidebarWidth = rect.left < 100 && rect.width < window.innerWidth * 0.4;
 
       // Log what we're checking for sidebar detection
-      if (hasBgBg || hasBorderR || hasFlexShrink || isNarrowLeftPanel) {
-        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, bgBg=${hasBgBg}, borderR=${hasBorderR}, flexShrink=${hasFlexShrink}, narrowLeft=${isNarrowLeftPanel}`);
+      if (hasBgBg || hasBorderR || hasFlexShrink || isNarrowLeftPanel || isSidebarWidth) {
+        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, bgBg=${hasBgBg}, borderR=${hasBorderR}, flexShrink=${hasFlexShrink}, narrowLeft=${isNarrowLeftPanel}, sidebarWidth=${isSidebarWidth}`);
       }
 
       // 1. Class-based: Claude Code Web sidebar has distinctive classes
@@ -258,14 +260,27 @@
         debugLog(`EXCLUDED by flex-shrink: ${rect.width}px wide`);
         return 0;
       }
+      // 4. Narrow left-edge containers (< 40% of viewport at left edge)
+      if (isSidebarWidth) {
+        debugLog(`EXCLUDED by sidebar width: ${rect.left}px left, ${rect.width}px wide`);
+        return 0;
+      }
 
-      // Score based on: scrollHeight + bonus for filling viewport
+      // Score based on: scrollHeight + bonus for filling viewport + width preference
       let score = scrollHeight;
 
       // Bonus if container height is close to viewport height (main content area)
       const heightRatio = rect.height / viewportHeight;
       if (heightRatio > 0.5) score += 10000; // Big bonus for main content area
       if (heightRatio > 0.7) score += 20000;
+
+      // Width bonus: strongly prefer wider containers (main content vs sidebar)
+      // Main content is typically 50%+ of viewport width
+      const viewportWidth = window.innerWidth;
+      const widthRatio = rect.width / viewportWidth;
+      if (widthRatio > 0.4) score += 15000; // Significant bonus for wide containers
+      if (widthRatio > 0.5) score += 25000; // Big bonus for main content width
+      if (widthRatio > 0.6) score += 10000; // Extra bonus for really wide
 
       return score;
     }
@@ -312,7 +327,7 @@
     if (best) {
       cachedContainer = best;
       const rect = best.getBoundingClientRect();
-      debugLog(`Found container: ${best.scrollHeight}px scroll, ${Math.round(rect.height)}px visible, score=${bestScore}, classes=${best.className.slice(0,50)}`);
+      debugLog(`Found container: ${best.scrollHeight}px scroll, ${Math.round(rect.width)}px wide, ${Math.round(rect.height)}px tall, score=${bestScore}, classes=${best.className.slice(0,50)}`);
     } else {
       debugLog('No container found!');
     }
