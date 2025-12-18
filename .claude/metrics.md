@@ -16,16 +16,20 @@
 
 ### Current State
 
-**Status**: ⚠️ No telemetry implemented (pure local extension)
+**Status**: ✅ Local metrics collection implemented (Option B)
 
-**Decision Point**: Should we add optional, privacy-preserving metrics?
+**Implementation Details**:
+- **PerformanceMonitor class** in content.js collects metrics locally
+- **No external servers** - all data stays in Chrome Storage
+- **User-exportable** via Debug Mode popup → Export button
+- **Privacy-preserving** - no PII, no tracking
 
-**Options**:
-- **A. Stay Pure**: No metrics collection, manual performance testing only
-- **B. Local Only**: Collect metrics locally, exportable by user
-- **C. Opt-In Anonymous**: User consents to anonymous performance data
-
-**Recommendation**: Start with Option B (local metrics), enable Option C in future if community requests.
+**Metrics Collected**:
+- FPS during scrolling
+- Hide operation latency
+- Restore operation latency
+- Container detection time
+- Session switch time
 
 ---
 
@@ -613,12 +617,14 @@ if (currentFPS < previousFPS - 5) {
 
 | Metric | Target | Status |
 |--------|--------|--------|
-| Scrolling FPS | ≥55 fps (avg) | ⏳ Pending |
-| Interaction Latency | <50ms (p95) | ⏳ Pending |
-| Container Detection | <50ms (avg) | ⏳ Pending |
-| Memory Usage | <10MB | ⏳ Pending |
-| Long Tasks | 0 (>100ms) | ⏳ Pending |
-| Console Errors | 0 | ⏳ Pending |
+| Scrolling FPS | ≥55 fps (avg) | ✅ Measurable via PerformanceMonitor |
+| Interaction Latency | <50ms (p95) | ✅ Tracked via hideLatency metric |
+| Container Detection | <50ms (avg) | ✅ Tracked via containerDetectionTime |
+| Memory Usage | <10MB | ⏳ Manual verification |
+| Long Tasks | 0 (>100ms) | ⏳ Manual verification |
+| Console Errors | 0 | ⏳ Manual verification |
+
+**How to Verify**: Enable Debug Mode in popup, use extension, click "Export" to download metrics JSON.
 
 ### Ongoing Goals (Continuous Improvement)
 

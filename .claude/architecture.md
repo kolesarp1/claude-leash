@@ -88,7 +88,7 @@ sequenceDiagram
 
 ## Component Deep Dive
 
-### 1. Content Script (content.js) - 1036 lines
+### 1. Content Script (content.js) - ~1350 lines
 
 **Primary Responsibilities:**
 - Detect chat container and message elements
@@ -97,6 +97,9 @@ sequenceDiagram
 - Manage session state and caching
 - Handle SPA navigation detection
 - Communicate with background script for badge updates
+- **Performance metrics collection** (via PerformanceMonitor)
+- **Storage migration** for version upgrades
+- **IntersectionObserver-based progressive restore**
 
 **Key Functions:**
 
@@ -194,10 +197,40 @@ let platformType = 'unknown'; // 'claudeAI' | 'claudeCode'
 3. **requestIdleCallback**: Wait for React hydration
 4. **Debouncing**: Prevent excessive re-calculations
 5. **CSS-only hiding**: `display:none` for instant hide, no reflow
+6. **PerformanceMonitor**: Tracks FPS, latencies, and session switch times
+7. **IntersectionObserver**: Smooth progressive restore when placeholder visible
+
+**PerformanceMonitor Class:**
+```javascript
+const perfMonitor = {
+  metrics: {
+    fps: [],              // Frame rate measurements
+    hideLatency: [],      // Time to hide messages
+    restoreLatency: [],   // Time to restore messages
+    containerDetectionTime: [], // Container detection time
+    sessionSwitchTime: [] // Full session switch time
+  },
+
+  startTimer(metricType) { /* returns {complete: () => duration} */ },
+  measureFPS(duration) { /* records FPS over duration */ },
+  getStats(metricType) { /* returns {mean, median, p95, p99, min, max} */ },
+  exportMetrics() { /* returns JSON for download */ }
+};
+```
+
+**Storage Versioning:**
+```javascript
+const STORAGE_VERSION = 1;
+
+async function migrateStorageIfNeeded() {
+  // Handles maxLines -> maxHeight conversion
+  // Future migrations can be added for breaking changes
+}
+```
 
 ---
 
-### 2. Popup UI (popup.html + popup.js) - 280 lines
+### 2. Popup UI (popup.html + popup.js) - ~350 lines
 
 **Primary Responsibilities:**
 - Render user interface with settings controls
@@ -205,6 +238,8 @@ let platformType = 'unknown'; // 'claudeAI' | 'claudeCode'
 - Handle user input and validation
 - Persist settings to Chrome Storage
 - Communicate updates to content script
+- **First-time user onboarding tip** (dismissable)
+- **Debug tools** (metrics export, FPS measurement)
 
 **UI Components:**
 
@@ -1036,21 +1071,29 @@ function scanDOM() {
 
 ## Future Architecture Considerations
 
-### Potential Optimizations
+### Implemented Optimizations
+
+1. **Intersection Observer for Visibility:** ✅ IMPLEMENTED
+   - More efficient than scroll event listening
+   - Progressive loading based on viewport proximity
+   - Triggers when placeholder becomes visible
+
+2. **Performance Monitoring:** ✅ IMPLEMENTED
+   - FPS measurement during scrolling
+   - Latency tracking for hide/restore operations
+   - Exportable metrics for debugging and showcasing
+
+### Potential Future Optimizations
 
 1. **Web Worker for Height Calculations:**
    - Offload heavy computation to background thread
    - Requires serializable data (no DOM references)
 
-2. **Intersection Observer for Visibility:**
-   - More efficient than scroll event listening
-   - Progressive loading based on viewport proximity
-
-3. **Virtual Scrolling:**
+2. **Virtual Scrolling:**
    - Only render visible messages in DOM
    - Requires significant refactoring of Claude's UI
 
-4. **IndexedDB for Larger Caches:**
+3. **IndexedDB for Larger Caches:**
    - Chrome Storage has 10MB limit
    - IndexedDB allows larger cached datasets
 
