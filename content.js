@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.14
+// Claude Leash - Content Script v3.4.15
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -70,7 +70,8 @@
   // Performance: debounce and guard flags
   let isRestoring = false;
   let collapseDebounceTimer = null;
-  const COLLAPSE_DEBOUNCE_MS = 50;
+  let earlyInterventionSetup = false;
+  const COLLAPSE_DEBOUNCE_MS = 150;
 
   // AbortController for cancelling pending operations on session switch
   let currentAbortController = null;
@@ -107,6 +108,7 @@
       /* Hide content marked for removal (instant, before JS processes) */
       .claude-leash-hidden {
         display: none !important;
+        contain: strict;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -439,6 +441,11 @@
   function setupEarlyIntervention() {
     if (!reactHydrated) return;
 
+    // Only setup once per session to prevent observer recreation loops
+    if (earlyInterventionSetup && contentObserver) {
+      return;
+    }
+
     if (contentObserver) contentObserver.disconnect();
 
     const contentParent = cachedContentParent;
@@ -481,6 +488,7 @@
     // PERF FIX: Only observe contentParent, not entire document.body
     // This dramatically reduces mutation callback frequency
     contentObserver.observe(contentParent, { childList: true, subtree: true });
+    earlyInterventionSetup = true;
     debugLog('Early intervention setup: observing content parent only');
   }
 
@@ -489,6 +497,12 @@
   function applyCollapseQuick() {
     if (isApplying || isRestoring || !reactHydrated) return;
     isApplying = true;
+
+    // Disconnect observer during changes to prevent re-triggering
+    const wasObserving = contentObserver !== null;
+    if (contentObserver) {
+      contentObserver.disconnect();
+    }
 
     try {
       const contentParent = cachedContentParent || getContentParent(getScrollContainer());
@@ -545,6 +559,10 @@
       }
     } finally {
       isApplying = false;
+      // Reconnect observer after changes complete
+      if (wasObserving && cachedContentParent) {
+        contentObserver.observe(cachedContentParent, { childList: true, subtree: true });
+      }
     }
   }
 
@@ -677,6 +695,13 @@
     if (hiddenNodes.length === 0) return;
 
     isRestoring = true;
+
+    // Disconnect observer during restore to prevent re-triggering
+    const wasObserving = contentObserver !== null;
+    if (contentObserver) {
+      contentObserver.disconnect();
+    }
+
     try {
       if (placeholder && placeholder.parentElement) {
         placeholder.remove();
@@ -694,6 +719,10 @@
       placeholder = null;
     } finally {
       isRestoring = false;
+      // Reconnect observer after restore
+      if (wasObserving && cachedContentParent) {
+        contentObserver.observe(cachedContentParent, { childList: true, subtree: true });
+      }
     }
   }
 
@@ -787,6 +816,7 @@
     cachedContainer = null;
     cachedContentParent = null;
     originalTotalHeight = 0;
+    earlyInterventionSetup = false;
     currentSessionId = newSessionId;
 
     // Load session states from storage

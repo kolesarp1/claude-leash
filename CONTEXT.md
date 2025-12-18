@@ -4,11 +4,11 @@
 
 ## Project Overview
 
-Chrome extension (v3.4.14) that hides old messages in Claude.ai and Claude Code Web to improve UI performance. Uses CSS `display: none` - messages remain in DOM and AI context.
+Chrome extension (v3.4.15) that hides old messages in Claude.ai and Claude Code Web to improve UI performance. Uses CSS `display: none` - messages remain in DOM and AI context.
 
 **Goal:** Cross-device compatible - works on laptops from 1024px to 4K displays.
 
-## Current Status: Working (v3.4.14)
+## Current Status: Working (v3.4.15)
 
 The extension successfully:
 - Detects main conversation container via scoring system
@@ -60,6 +60,7 @@ function getScrollContainer() {
 
 | Version | Change |
 |---------|--------|
+| v3.4.15 | More perf fixes: observer disconnect during updates, CSS containment, prevent loops |
 | v3.4.14 | Performance fixes: batch reads/writes, narrow MutationObserver, debounce |
 | v3.4.13 | Cross-device compatible: max(40%, 500px) width threshold |
 | v3.4.12 | Require 50% viewport width minimum |

@@ -322,6 +322,7 @@ if (isMyNewPattern) {
 
 | Version | Bug | Root Cause | Fix |
 |---------|-----|------------|-----|
+| v3.4.15 | Hide/restore loop causing RecalcStyle spam | Observer recreated on every applyCollapse, not disconnected during changes | Add earlyInterventionSetup flag, disconnect observer during hide/restore, CSS containment, 150ms debounce |
 | v3.4.14 | Extension hurts performance (1s+ blocking frames) | Layout thrashing, MutationObserver on document.body, no debounce | Batch reads/writes, observe contentParent only, add debounce + isRestoring guard |
 | v3.4.13 | 50% threshold too aggressive for small screens | Fixed percentage didn't scale for laptops | Changed to max(40%, 500px) for cross-device support |
 | v3.4.12 | 718px nested container selected | Large scrollHeight dominated scoring | Added 50% viewport minimum width requirement |
