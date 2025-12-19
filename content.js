@@ -509,16 +509,18 @@
       }
 
       // Exclude sidebar panels - multiple detection strategies
-      const hasBgBg = classes.indexOf('bg-bg-') !== -1;
-      const hasBorderR = classes.indexOf('border-r-[') !== -1 || classes.indexOf('border-r ') !== -1;
+      const sidebarConfig = DOM_SELECTORS.sidebar;
+      const hasSidebarClass = sidebarConfig.classPatterns.some(pattern => classes.indexOf(pattern) !== -1);
       const hasFlexShrink = classes.indexOf('flex-shrink-0') !== -1;
-      const isNarrowLeftPanel = rect.left < 50 && rect.width < 800 && rect.width < window.innerWidth * 0.6;
+      const isNarrowLeftPanel = rect.left < sidebarConfig.maxLeftPosition &&
+                                rect.width < sidebarConfig.maxWidth &&
+                                rect.width < window.innerWidth * sidebarConfig.viewportWidthRatio;
       // Additional: containers less than 40% of viewport width at left edge are likely sidebars
       const isSidebarWidth = rect.left < 100 && rect.width < window.innerWidth * 0.4;
 
       // Log what we're checking for sidebar detection
-      if (hasBgBg || hasBorderR || hasFlexShrink || isNarrowLeftPanel || isSidebarWidth) {
-        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, bgBg=${hasBgBg}, borderR=${hasBorderR}, flexShrink=${hasFlexShrink}, narrowLeft=${isNarrowLeftPanel}, sidebarWidth=${isSidebarWidth}`);
+      if (hasSidebarClass || hasFlexShrink || isNarrowLeftPanel || isSidebarWidth) {
+        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, hasSidebarClass=${hasSidebarClass}, flexShrink=${hasFlexShrink}, narrowLeft=${isNarrowLeftPanel}, sidebarWidth=${isSidebarWidth}`);
       }
 
       // 1. Class-based: Claude Code Web sidebar has distinctive classes
@@ -602,7 +604,12 @@
     if (best) {
       cachedContainer = best;
       const rect = best.getBoundingClientRect();
-      debugLog(`Found container: ${best.scrollHeight}px scroll, ${Math.round(rect.width)}px wide, ${Math.round(rect.height)}px tall, score=${bestScore}, classes=${best.className.slice(0,50)}`);
+      if (detectionTimer) {
+        const latency = detectionTimer.complete();
+        debugLog(`Found container in ${latency.toFixed(2)}ms: ${best.scrollHeight}px scroll, ${Math.round(rect.width)}px wide, ${Math.round(rect.height)}px tall, score=${bestScore}`);
+      } else {
+        debugLog(`Found container: ${best.scrollHeight}px scroll, ${Math.round(rect.width)}px wide, ${Math.round(rect.height)}px tall, score=${bestScore}, classes=${best.className.slice(0,50)}`);
+      }
     } else {
       if (detectionTimer) detectionTimer.complete();
       debugLog('No container found!');
