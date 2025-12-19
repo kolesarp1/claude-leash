@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.5.0
+// Claude Leash - Content Script v3.5.1
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -36,6 +36,34 @@
   const MAX_CONTENT_DEPTH = 15;
   const MAX_SESSIONS_STORED = 50;
   const CACHE_MATCH_THRESHOLD = 0.7; // 70% match for fast path
+  const MAX_DIVS_TO_CHECK = 400;
+
+  // UI timing constants (previously magic numbers)
+  const BADGE_UPDATE_DELAY_MS = 50;
+  const TAB_STATUS_CHECK_DELAY_MS = 500;
+  const DEBUG_HIGHLIGHT_DURATION_MS = 3000;
+  const METRICS_SAVE_DEBOUNCE_MS = 5000;
+  const SCROLL_THROTTLE_MS = 100;
+  const PLACEHOLDER_RESTORE_DELAY_MS = 100;
+  const FAST_PATH_TIMEOUT_MS = 1500;
+  const FAST_PATH_CHECK_INTERVAL_MS = 100;
+  const REACT_HYDRATION_TIMEOUT_MS = 3000;
+  const REACT_HYDRATION_FALLBACK_MS = 2000;
+  const FPS_MEASUREMENT_DURATION_MS = 3000;
+
+  // ============ Utilities ============
+
+  // Shared debounce utility
+  function debounce(fn, ms) {
+    let timer = null;
+    return function(...args) {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        fn.apply(this, args);
+      }, ms);
+    };
+  }
 
   // ============ DOM Selectors Configuration ============
   // Future-proof: Update these when Claude changes its DOM structure
@@ -113,7 +141,7 @@
     maxSamples: 100,
 
     // Measure FPS during scrolling
-    measureFPS(duration = 3000) {
+    measureFPS(duration = FPS_MEASUREMENT_DURATION_MS) {
       let frameCount = 0;
       const startTime = performance.now();
 
@@ -169,7 +197,7 @@
       this._saveTimeout = setTimeout(() => {
         this._saveTimeout = null;
         this.saveMetrics();
-      }, 5000); // Save every 5 seconds max
+      }, METRICS_SAVE_DEBOUNCE_MS);
     },
 
     async saveMetrics() {
@@ -182,7 +210,7 @@
           }
         });
       } catch (e) {
-        // Silent fail
+        debugLog('Failed to save metrics:', e.message);
       }
     },
 
@@ -193,7 +221,7 @@
           this.metrics = result[METRICS_KEY].metrics;
         }
       } catch (e) {
-        // Silent fail
+        debugLog('Failed to load metrics:', e.message);
       }
     },
 
@@ -298,6 +326,10 @@
   }
 
   // ============ State ============
+  // Organized into logical groups for maintainability
+  // Note: Not using a single state object to avoid breaking existing code
+
+  // --- Settings State ---
   let currentSettings = {
     maxHeight: 10000,
     isCollapsed: false,
@@ -305,35 +337,34 @@
     enableClaudeCode: true
   };
 
-  let lastUrl = location.href;
-  let isApplying = false;
+  // --- Cache State ---
   let cachedContainer = null;
   let cachedContentParent = null;
-  let contentObserver = null;
-  let reactHydrated = false;
+  let sessionContentCache = new Map(); // sessionId -> {blockCount, scrollHeight, timestamp}
 
-  // Storage for hidden content (CSS-only, no DOM removal to avoid React conflicts)
-  let hiddenNodes = [];
-  let totalHiddenHeight = 0;
-  let placeholder = null;
-  let originalTotalHeight = 0;
+  // --- UI State ---
+  let hiddenNodes = [];            // Array of {node, height} for hidden content
+  let totalHiddenHeight = 0;       // Total height of hidden content in pixels
+  let placeholder = null;          // Reference to placeholder DOM element
+  let originalTotalHeight = 0;     // Original total height before hiding
 
-  // Session tracking
+  // --- Process Flags ---
+  let isApplying = false;          // Guard: currently applying collapse
+  let isRestoring = false;         // Guard: currently restoring content
+  let reactHydrated = false;       // Flag: React has finished hydrating
+  let earlyInterventionSetup = false; // Flag: early intervention observer set up
+  let historyApiTriggered = false; // Flag: History API hooks are working
+
+  // --- Navigation/Session State ---
+  let lastUrl = location.href;
   let currentSessionId = null;
-  let sessionContentCache = new Map(); // In-memory cache: sessionId -> {blockCount, scrollHeight, timestamp}
 
-  // Performance: debounce and guard flags
-  let isRestoring = false;
-  let collapseDebounceTimer = null;
-  let earlyInterventionSetup = false;
-  const COLLAPSE_DEBOUNCE_MS = 150;
-
-  // AbortController for cancelling pending operations on session switch
-  let currentAbortController = null;
-
-  // Track if History API hooks are working (to disable polling)
-  let historyApiTriggered = false;
-  let pollingIntervalId = null;
+  // --- Observers/Timers State ---
+  let contentObserver = null;      // MutationObserver for content changes
+  let placeholderObserver = null;  // IntersectionObserver for placeholder visibility
+  let collapseDebounceTimer = null; // Debounce timer for collapse operations
+  let pollingIntervalId = null;    // Interval ID for URL polling fallback
+  let currentAbortController = null; // AbortController for cancelling async operations
 
   // ============ CSS Injection (runs FIRST for instant effect) ============
 
@@ -391,7 +422,7 @@
         DEBUG_MODE = result[STORAGE_KEY].debugMode === true;
       }
     } catch (e) {
-      // Silent fail - settings will use defaults
+      debugLog('Failed to load settings, using defaults:', e.message);
     }
   }
 
@@ -459,12 +490,12 @@
         window.requestIdleCallback(() => {
           reactHydrated = true;
           resolve();
-        }, { timeout: 3000 });
+        }, { timeout: REACT_HYDRATION_TIMEOUT_MS });
       } else {
         setTimeout(() => {
           reactHydrated = true;
           resolve();
-        }, 2000);
+        }, REACT_HYDRATION_FALLBACK_MS);
       }
     });
   }
@@ -576,7 +607,7 @@
     // Strategy 2: Scan divs with getComputedStyle (limited, for non-Tailwind containers)
     if (!best || bestScore < 10000) {
       const allDivs = document.querySelectorAll(DOM_SELECTORS.container.fallback);
-      const maxDivsToCheck = Math.min(allDivs.length, 400);
+      const maxDivsToCheck = Math.min(allDivs.length, MAX_DIVS_TO_CHECK);
 
       for (let i = 0; i < maxDivsToCheck; i++) {
         const container = allDivs[i];
@@ -679,14 +710,20 @@
     const el = document.createElement('div');
     el.id = PLACEHOLDER_ID;
     const heightK = Math.round(hiddenHeight / 1000);
-    el.innerHTML = `
-      <div style="font-weight: 600; margin-bottom: 4px;">
-        ${heightK}k pixels hidden (${hiddenCount} blocks)
-      </div>
-      <div style="font-size: 11px; opacity: 0.8;">
-        Click to restore
-      </div>
-    `;
+
+    // Safe DOM manipulation (no innerHTML to prevent XSS)
+    const mainText = document.createElement('div');
+    mainText.style.fontWeight = '600';
+    mainText.style.marginBottom = '4px';
+    mainText.textContent = `${heightK}k pixels hidden (${hiddenCount} blocks)`;
+
+    const subText = document.createElement('div');
+    subText.style.fontSize = '11px';
+    subText.style.opacity = '0.8';
+    subText.textContent = 'Click to restore';
+
+    el.appendChild(mainText);
+    el.appendChild(subText);
     el.addEventListener('click', () => restoreAll());
     return el;
   }
@@ -696,7 +733,8 @@
       const countEl = placeholder.querySelector('div');
       if (countEl) {
         const heightK = Math.round(totalHiddenHeight / 1000);
-        countEl.innerHTML = `${heightK}k pixels hidden (${hiddenNodes.length} blocks)`;
+        // Safe text update (no innerHTML)
+        countEl.textContent = `${heightK}k pixels hidden (${hiddenNodes.length} blocks)`;
       }
     }
   }
@@ -933,7 +971,7 @@
       setTimeout(() => {
         updateBadge(Math.round(visibleHeight), Math.round(originalTotalHeight), true);
         saveSessionState();
-      }, 50);
+      }, BADGE_UPDATE_DELAY_MS);
 
       // Complete performance measurement
       const latency = hideTimer.complete();
@@ -1041,8 +1079,6 @@
 
   // ============ Scroll Detection with IntersectionObserver ============
 
-  let placeholderObserver = null;
-
   function setupScrollDetection() {
     let lastScrollTop = 0;
     let scrollThrottle = null;
@@ -1065,7 +1101,7 @@
       scrollThrottle = setTimeout(() => {
         scrollThrottle = null;
         checkScroll();
-      }, 100);
+      }, SCROLL_THROTTLE_MS);
     }, true);
   }
 
@@ -1090,7 +1126,7 @@
           // Re-setup observer if there are still hidden nodes
           if (hiddenNodes.length > 0 && placeholder && document.contains(placeholder)) {
             // Small delay to prevent rapid-fire restores
-            setTimeout(() => setupPlaceholderObserver(), 100);
+            setTimeout(() => setupPlaceholderObserver(), PLACEHOLDER_RESTORE_DELAY_MS);
           }
         }
       });
@@ -1153,7 +1189,7 @@
       debugLog(`Trying fast path for cached session (${Math.round(cachedContent.scrollHeight/1000)}k px cached)`);
 
       const fastPathStart = Date.now();
-      const fastPathTimeout = 1500; // 1.5 seconds max
+      const fastPathTimeout = FAST_PATH_TIMEOUT_MS;
       const minMatchThreshold = 0.5; // Accept 50% match for fast path
 
       // Only force refresh container detection once, then reuse cache
@@ -1162,7 +1198,7 @@
       while (Date.now() - fastPathStart < fastPathTimeout) {
         if (signal.aborted) return;
 
-        await sleep(100);
+        await sleep(FAST_PATH_CHECK_INTERVAL_MS);
 
         // Reuse cached container, only refresh if not found
         if (!container || !document.contains(container)) {
@@ -1398,7 +1434,7 @@
               setTimeout(() => {
                 cont.style.outline = '';
                 contentParent.style.outline = '';
-              }, 3000);
+              }, DEBUG_HIGHLIGHT_DURATION_MS);
             }
 
             sendResponse({
@@ -1437,7 +1473,7 @@
           break;
 
         case 'measureFPS':
-          perfMonitor.measureFPS(message.duration || 3000);
+          perfMonitor.measureFPS(message.duration || FPS_MEASUREMENT_DURATION_MS);
           sendResponse({ success: true, message: 'FPS measurement started' });
           break;
 
@@ -1450,6 +1486,39 @@
     }
     return true;
   });
+
+  // ============ Cleanup ============
+
+  function cleanup() {
+    // Disconnect all observers to prevent memory leaks
+    if (contentObserver) {
+      contentObserver.disconnect();
+      contentObserver = null;
+    }
+    if (placeholderObserver) {
+      placeholderObserver.disconnect();
+      placeholderObserver = null;
+    }
+    // Clear polling interval
+    if (pollingIntervalId) {
+      clearInterval(pollingIntervalId);
+      pollingIntervalId = null;
+    }
+    // Clear any pending debounce timers
+    if (collapseDebounceTimer) {
+      clearTimeout(collapseDebounceTimer);
+      collapseDebounceTimer = null;
+    }
+    // Abort any pending async operations
+    if (currentAbortController) {
+      currentAbortController.abort();
+      currentAbortController = null;
+    }
+    debugLog('Cleanup complete');
+  }
+
+  // Register cleanup on page unload
+  window.addEventListener('beforeunload', cleanup);
 
   // ============ Init ============
 

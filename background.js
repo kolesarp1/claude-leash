@@ -1,6 +1,9 @@
 // Background service worker - manages badge
 const STORAGE_KEY = 'claudeCollapseSettings';
 
+// Timing constants
+const TAB_STATUS_CHECK_DELAY_MS = 500;
+
 // Update badge with just visible amount in "Xk" format
 function updateBadge(tabId, visible, total, isCollapsed) {
   if (total === 0) {
@@ -43,7 +46,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' || changeInfo.url) {
       setTimeout(() => {
         chrome.tabs.sendMessage(tabId, { action: 'reportStatus' }).catch(() => {});
-      }, 500);
+      }, TAB_STATUS_CHECK_DELAY_MS);
     }
   } else {
     clearBadge(tabId);
@@ -59,7 +62,10 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     } else {
       clearBadge(activeInfo.tabId);
     }
-  } catch (e) {}
+  } catch (e) {
+    // Tab may have been closed or is not accessible
+    console.debug('Claude Leash: Tab activation check failed:', e.message);
+  }
 });
 
 console.log('Claude Chat Collapse: Background script loaded');

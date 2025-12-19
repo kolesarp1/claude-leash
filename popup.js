@@ -81,7 +81,9 @@
     try {
       await chrome.storage.local.set({ [THEME_KEY]: theme });
       applyTheme(theme);
-    } catch (e) {}
+    } catch (e) {
+      console.debug('Failed to save theme:', e.message);
+    }
   }
 
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -105,7 +107,9 @@
     tipBannerEl.style.display = 'none';
     try {
       await chrome.storage.local.set({ [TIP_DISMISSED_KEY]: true });
-    } catch (e) {}
+    } catch (e) {
+      console.debug('Failed to dismiss tip:', e.message);
+    }
   }
 
   // ============ Debug tools handling ============
@@ -166,7 +170,9 @@
       debugModeEl.checked = debugMode;
       updateToggleButton();
       updateDebugTools();
-    } catch (e) {}
+    } catch (e) {
+      console.debug('Failed to load settings:', e.message);
+    }
   }
 
   async function saveSettings() {
@@ -174,7 +180,9 @@
       await chrome.storage.local.set({
         [STORAGE_KEY]: { maxHeight, scale, isCollapsed, enableClaudeAi, enableClaudeCode, debugMode }
       });
-    } catch (e) {}
+    } catch (e) {
+      console.debug('Failed to save settings:', e.message);
+    }
   }
 
   // ============ Content script communication ============
