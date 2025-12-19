@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.10
+// Claude Leash - Content Script v3.4.15
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -67,6 +67,12 @@
   let currentSessionId = null;
   let sessionContentCache = new Map(); // In-memory cache: sessionId -> {blockCount, scrollHeight, timestamp}
 
+  // Performance: debounce and guard flags
+  let isRestoring = false;
+  let collapseDebounceTimer = null;
+  let earlyInterventionSetup = false;
+  const COLLAPSE_DEBOUNCE_MS = 150;
+
   // AbortController for cancelling pending operations on session switch
   let currentAbortController = null;
 
@@ -102,6 +108,7 @@
       /* Hide content marked for removal (instant, before JS processes) */
       .claude-leash-hidden {
         display: none !important;
+        contain: strict;
       }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -232,15 +239,30 @@
       if (rect.left < SIDEBAR_MAX_LEFT && rect.width < SIDEBAR_MAX_WIDTH) return 0;
       if (scrollHeight <= MIN_SCROLL_HEIGHT) return 0;
 
+      // CRITICAL: Main content area width requirements
+      // Cross-device compatible: works on laptops from 1024px to 4K displays
+      // - Must be at least 40% of viewport (catches nested containers on large screens)
+      // - Must be at least 500px absolute (safety floor for tiny viewports)
+      const viewportWidth = window.innerWidth;
+      const minWidthPercent = viewportWidth * 0.4;
+      const minWidthAbsolute = 500;
+      const minWidth = Math.max(minWidthPercent, minWidthAbsolute);
+      if (rect.width < minWidth) {
+        debugLog(`EXCLUDED by min width: ${rect.width}px < ${Math.round(minWidth)}px (40% of ${viewportWidth}px or 500px floor)`);
+        return 0;
+      }
+
       // Exclude sidebar panels - multiple detection strategies
       const hasBgBg = classes.indexOf('bg-bg-') !== -1;
       const hasBorderR = classes.indexOf('border-r-[') !== -1 || classes.indexOf('border-r ') !== -1;
       const hasFlexShrink = classes.indexOf('flex-shrink-0') !== -1;
       const isNarrowLeftPanel = rect.left < 50 && rect.width < 800 && rect.width < window.innerWidth * 0.6;
+      // Additional: containers less than 40% of viewport width at left edge are likely sidebars
+      const isSidebarWidth = rect.left < 100 && rect.width < window.innerWidth * 0.4;
 
       // Log what we're checking for sidebar detection
-      if (hasBgBg || hasBorderR || hasFlexShrink || isNarrowLeftPanel) {
-        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, bgBg=${hasBgBg}, borderR=${hasBorderR}, flexShrink=${hasFlexShrink}, narrowLeft=${isNarrowLeftPanel}`);
+      if (hasBgBg || hasBorderR || hasFlexShrink || isNarrowLeftPanel || isSidebarWidth) {
+        debugLog(`Sidebar check: w=${rect.width}, left=${rect.left}, bgBg=${hasBgBg}, borderR=${hasBorderR}, flexShrink=${hasFlexShrink}, narrowLeft=${isNarrowLeftPanel}, sidebarWidth=${isSidebarWidth}`);
       }
 
       // 1. Class-based: Claude Code Web sidebar has distinctive classes
@@ -258,14 +280,26 @@
         debugLog(`EXCLUDED by flex-shrink: ${rect.width}px wide`);
         return 0;
       }
+      // 4. Narrow left-edge containers (< 40% of viewport at left edge)
+      if (isSidebarWidth) {
+        debugLog(`EXCLUDED by sidebar width: ${rect.left}px left, ${rect.width}px wide`);
+        return 0;
+      }
 
-      // Score based on: scrollHeight + bonus for filling viewport
+      // Score based on: scrollHeight + bonus for filling viewport + width preference
       let score = scrollHeight;
 
       // Bonus if container height is close to viewport height (main content area)
       const heightRatio = rect.height / viewportHeight;
       if (heightRatio > 0.5) score += 10000; // Big bonus for main content area
       if (heightRatio > 0.7) score += 20000;
+
+      // Width bonus: strongly prefer wider containers (main content vs sidebar)
+      // Main content is typically 50%+ of viewport width (viewportWidth declared above)
+      const widthRatio = rect.width / viewportWidth;
+      if (widthRatio > 0.4) score += 15000; // Significant bonus for wide containers
+      if (widthRatio > 0.5) score += 25000; // Big bonus for main content width
+      if (widthRatio > 0.6) score += 10000; // Extra bonus for really wide
 
       return score;
     }
@@ -312,7 +346,7 @@
     if (best) {
       cachedContainer = best;
       const rect = best.getBoundingClientRect();
-      debugLog(`Found container: ${best.scrollHeight}px scroll, ${Math.round(rect.height)}px visible, score=${bestScore}, classes=${best.className.slice(0,50)}`);
+      debugLog(`Found container: ${best.scrollHeight}px scroll, ${Math.round(rect.width)}px wide, ${Math.round(rect.height)}px tall, score=${bestScore}, classes=${best.className.slice(0,50)}`);
     } else {
       debugLog('No container found!');
     }
@@ -407,14 +441,23 @@
   function setupEarlyIntervention() {
     if (!reactHydrated) return;
 
+    // Only setup once per session to prevent observer recreation loops
+    if (earlyInterventionSetup && contentObserver) {
+      return;
+    }
+
     if (contentObserver) contentObserver.disconnect();
 
-    contentObserver = new MutationObserver((mutations) => {
-      if (!currentSettings.isCollapsed || !isEnabledForCurrentInterface()) return;
-      if (!reactHydrated) return;
+    const contentParent = cachedContentParent;
+    if (!contentParent) {
+      debugLog('Cannot setup early intervention: no content parent');
+      return;
+    }
 
-      const contentParent = cachedContentParent;
-      if (!contentParent) return;
+    contentObserver = new MutationObserver((mutations) => {
+      // Guard: skip if restoring, not collapsed, or disabled
+      if (isRestoring || !currentSettings.isCollapsed || !isEnabledForCurrentInterface()) return;
+      if (!reactHydrated) return;
 
       let hasNewContent = false;
       mutations.forEach(mutation => {
@@ -429,19 +472,37 @@
       });
 
       if (hasNewContent) {
-        requestAnimationFrame(() => {
-          applyCollapseQuick();
-        });
+        // Debounce: clear any pending collapse and schedule new one
+        if (collapseDebounceTimer) {
+          clearTimeout(collapseDebounceTimer);
+        }
+        collapseDebounceTimer = setTimeout(() => {
+          collapseDebounceTimer = null;
+          requestAnimationFrame(() => {
+            applyCollapseQuick();
+          });
+        }, COLLAPSE_DEBOUNCE_MS);
       }
     });
 
-    contentObserver.observe(document.body, { childList: true, subtree: true });
+    // PERF FIX: Only observe contentParent, not entire document.body
+    // This dramatically reduces mutation callback frequency
+    contentObserver.observe(contentParent, { childList: true, subtree: true });
+    earlyInterventionSetup = true;
+    debugLog('Early intervention setup: observing content parent only');
   }
 
   // Quick collapse without full recalculation - CSS only, no DOM removal
+  // PERF FIX: Batch all reads before writes to avoid layout thrashing
   function applyCollapseQuick() {
-    if (isApplying || !reactHydrated) return;
-    isApplying = true; // Fix: set flag at start to prevent concurrent calls
+    if (isApplying || isRestoring || !reactHydrated) return;
+    isApplying = true;
+
+    // Disconnect observer during changes to prevent re-triggering
+    const wasObserving = contentObserver !== null;
+    if (contentObserver) {
+      contentObserver.disconnect();
+    }
 
     try {
       const contentParent = cachedContentParent || getContentParent(getScrollContainer());
@@ -450,28 +511,46 @@
       const children = getContentChildren(contentParent);
       if (children.length === 0) return;
 
-      let heightFromBottom = 0;
       const maxHeight = currentSettings.maxHeight;
 
-      for (let i = children.length - 1; i >= 0; i--) {
-        const child = children[i];
-        const height = Math.round(child.offsetHeight || child.getBoundingClientRect().height);
-        heightFromBottom += height;
+      // PHASE 1: Batch all reads (no writes here!)
+      const heights = [];
+      for (let i = 0; i < children.length; i++) {
+        heights[i] = Math.round(children[i].offsetHeight || 0);
+      }
 
+      // Calculate cutoff index from reads
+      let heightFromBottom = 0;
+      let cutoffIndex = -1;
+      for (let i = children.length - 1; i >= 0; i--) {
+        heightFromBottom += heights[i];
         if (heightFromBottom > maxHeight) {
-          for (let j = 0; j <= i; j++) {
-            const node = children[j];
-            if (!node.classList.contains('claude-leash-hidden')) {
-              const nodeHeight = Math.round(node.offsetHeight);
-              node.classList.add('claude-leash-hidden');
-              hiddenNodes.push({ node, height: nodeHeight });
-              totalHiddenHeight += nodeHeight;
-            }
-          }
+          cutoffIndex = i;
           break;
         }
       }
 
+      // PHASE 2: Batch all writes (no reads here!)
+      if (cutoffIndex >= 0) {
+        const nodesToHide = [];
+        for (let j = 0; j <= cutoffIndex; j++) {
+          const node = children[j];
+          if (!node.classList.contains('claude-leash-hidden')) {
+            nodesToHide.push({ node, height: heights[j] });
+          }
+        }
+
+        // Apply all class changes in one batch
+        if (nodesToHide.length > 0) {
+          for (const item of nodesToHide) {
+            item.node.classList.add('claude-leash-hidden');
+            hiddenNodes.push(item);
+            totalHiddenHeight += item.height;
+          }
+        }
+      }
+
+      // Update placeholder (single DOM write)
       if (hiddenNodes.length > 0 && (!placeholder || !placeholder.parentElement)) {
         placeholder = createPlaceholder(totalHiddenHeight, hiddenNodes.length);
         contentParent.insertBefore(placeholder, contentParent.firstChild);
@@ -479,7 +558,11 @@
         updatePlaceholder();
       }
     } finally {
-      isApplying = false; // Always reset flag
+      isApplying = false;
+      // Reconnect observer after changes complete
+      if (wasObserving && cachedContentParent) {
+        contentObserver.observe(cachedContentParent, { childList: true, subtree: true });
+      }
     }
   }
 
@@ -596,49 +679,76 @@
   }
 
   function restoreAll() {
-    restoreAllSilent();
-    const container = getScrollContainer();
-    const total = container ? Math.round(container.scrollHeight) : 0;
-    updateBadge(total, total, currentSettings.isCollapsed);
-    saveSessionState();
+    isRestoring = true;
+    try {
+      restoreAllSilent();
+      const container = getScrollContainer();
+      const total = container ? Math.round(container.scrollHeight) : 0;
+      updateBadge(total, total, currentSettings.isCollapsed);
+      saveSessionState();
+    } finally {
+      isRestoring = false;
+    }
   }
 
   function restoreAllSilent() {
     if (hiddenNodes.length === 0) return;
 
-    if (placeholder && placeholder.parentElement) {
-      placeholder.remove();
+    isRestoring = true;
+
+    // Disconnect observer during restore to prevent re-triggering
+    const wasObserving = contentObserver !== null;
+    if (contentObserver) {
+      contentObserver.disconnect();
     }
 
-    hiddenNodes.forEach(data => {
-      data.node.classList.remove('claude-leash-hidden');
-    });
+    try {
+      if (placeholder && placeholder.parentElement) {
+        placeholder.remove();
+      }
 
-    debugLog(`Restored ${hiddenNodes.length} blocks`);
+      // Batch all class removals
+      hiddenNodes.forEach(data => {
+        data.node.classList.remove('claude-leash-hidden');
+      });
 
-    hiddenNodes = [];
-    totalHiddenHeight = 0;
-    placeholder = null;
+      debugLog(`Restored ${hiddenNodes.length} blocks`);
+
+      hiddenNodes = [];
+      totalHiddenHeight = 0;
+      placeholder = null;
+    } finally {
+      isRestoring = false;
+      // Reconnect observer after restore
+      if (wasObserving && cachedContentParent) {
+        contentObserver.observe(cachedContentParent, { childList: true, subtree: true });
+      }
+    }
   }
 
   function restoreChunk(count = 5) {
     if (hiddenNodes.length === 0) return;
 
-    const toRestore = hiddenNodes.splice(0, count);
+    isRestoring = true;
+    try {
+      const toRestore = hiddenNodes.splice(0, count);
 
-    toRestore.forEach(data => {
-      data.node.classList.remove('claude-leash-hidden');
-      totalHiddenHeight -= data.height;
-    });
+      toRestore.forEach(data => {
+        data.node.classList.remove('claude-leash-hidden');
+        totalHiddenHeight -= data.height;
+      });
 
-    if (hiddenNodes.length === 0 && placeholder) {
-      placeholder.remove();
-      placeholder = null;
-    } else {
-      updatePlaceholder();
+      if (hiddenNodes.length === 0 && placeholder) {
+        placeholder.remove();
+        placeholder = null;
+      } else {
+        updatePlaceholder();
+      }
+
+      debugLog(`Restored ${toRestore.length} blocks, ${hiddenNodes.length} remaining`);
+    } finally {
+      isRestoring = false;
     }
-
-    debugLog(`Restored ${toRestore.length} blocks, ${hiddenNodes.length} remaining`);
   }
 
   // ============ Badge ============
@@ -706,6 +816,7 @@
     cachedContainer = null;
     cachedContentParent = null;
     originalTotalHeight = 0;
+    earlyInterventionSetup = false;
     currentSessionId = newSessionId;
 
     // Load session states from storage

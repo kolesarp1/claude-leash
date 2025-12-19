@@ -1,15 +1,20 @@
 # Claude Leash - Development Context
 
+> **Note:** For comprehensive development guidelines, see `CLAUDE.md`
+
 ## Project Overview
 
-Chrome extension that hides old messages in Claude.ai and Claude Code Web to improve UI performance during long conversations. Messages are hidden via CSS `display: none` - they remain in DOM and AI context.
+Chrome extension (v3.4.15) that hides old messages in Claude.ai and Claude Code Web to improve UI performance. Uses CSS `display: none` - messages remain in DOM and AI context.
 
-## Current Status: ✅ WORKING (v1.8.1)
+**Goal:** Cross-device compatible - works on laptops from 1024px to 4K displays.
+
+## Current Status: Working (v3.4.15)
 
 The extension successfully:
-- Detects conversation messages on Claude.ai using class-based selectors
-- Hides older messages when "Collapse" is clicked
-- Shows badge with visible/total count (e.g., "8/53")
+- Detects main conversation container via scoring system
+- Excludes sidebars using width/class/position rules
+- Hides older messages with CSS (no DOM removal)
+- Shows badge with visible content amount (e.g., "9k")
 - Supports Light/Dark/Auto themes
 - Works on both Claude.ai and Claude Code Web
 
@@ -17,104 +22,87 @@ The extension successfully:
 
 ```
 claude-leash/
-├── manifest.json      # Extension config, v1.8.1
-├── content.js         # Main logic - message detection & hide/show
-├── popup.html         # UI with slider, buttons, theme toggle
-├── popup.js           # Popup logic, settings persistence
-├── background.js      # Badge updates, tab communication
+├── manifest.json      # Extension config, version
+├── content.js         # Main logic - container detection, hiding (~1000 lines)
+├── popup.html         # UI with sliders, buttons, inline CSS (~395 lines)
+├── popup.js           # Popup logic, settings persistence (~280 lines)
+├── background.js      # Badge updates, tab communication (~66 lines)
 ├── icon16/48/128.png  # Extension icons
-└── README.md          # Documentation
+├── CLAUDE.md          # Development guide (READ THIS)
+├── CONTEXT.md         # This file (quick reference)
+├── README.md          # User documentation
+└── .claude/
+    ├── settings.local.json  # Claude Code permissions
+    └── checklists/
+        └── pr-checklist.md  # PR verification checklist
 ```
 
 ## Key Detection Logic (content.js)
 
-**Claude.ai detection (lines ~108-192):**
+**Container Detection (lines ~212-320):**
 ```javascript
-// Find user messages and Claude responses by class
-const userMessages = document.querySelectorAll('[class*="font-user-message"]');
-const claudeResponses = document.querySelectorAll('[class*="font-claude-response"]');
-
-// Walk up DOM to find message containers
-// Stop at parent with >900px width or >3 siblings
+// Score-based detection - prefers wide, tall, scrollable containers
+function getScrollContainer() {
+  // 1. Find elements with overflow-y-auto/scroll classes
+  // 2. Score by: scrollHeight + height ratio bonus + width ratio bonus
+  // 3. Exclude: sidebars, narrow containers, left-edge panels
+  // 4. Return highest-scoring container
+}
 ```
 
-**Claude Code detection (lines ~55-107):**
-```javascript
-// Uses data-testid="conversation-turn-X" attributes
-const turns = document.querySelectorAll('[data-testid^="conversation-turn-"]');
-```
+**Exclusion Rules:**
+- Width < max(40% viewport, 500px) → excluded (cross-device compatible)
+- Has `bg-bg-*` or `border-r` classes → excluded (sidebar)
+- Left edge + narrow → excluded
+- `flex-shrink-0` + width < 800px → excluded
 
 ## Recent Development History
 
-1. **Initial problem**: Extension was finding wrong elements (web search result cards instead of conversation turns)
-2. **Solution attempts**:
-   - Tried structural detection (scroll containers, depth walking) - unreliable
-   - Tried position-based validation - still found wrong elements
-3. **Working solution**: Class-based selectors from DOM analysis
-   - `font-user-message` for user messages
-   - `font-claude-response` for Claude responses
-   - Walk up DOM to find container, stop at wide parent or many-sibling parent
-
-## Known Issues / Future Improvements
-
-1. **Message count mismatch**: Shows ~60 containers for 27 user messages (counts both user + Claude as separate)
-   - Could group into "turns" (user + response pairs)
-   
-2. **Initial flash**: Messages may briefly appear on page load before hiding
-
-3. **Claude Code Web**: Detection works but may need refinement for the sidebar panel
-
-4. **Persistence**: Hidden state persists via chrome.storage, but unhide-on-find can cause count drift
+| Version | Change |
+|---------|--------|
+| v3.4.15 | More perf fixes: observer disconnect during updates, CSS containment, prevent loops |
+| v3.4.14 | Performance fixes: batch reads/writes, narrow MutationObserver, debounce |
+| v3.4.13 | Cross-device compatible: max(40%, 500px) width threshold |
+| v3.4.12 | Require 50% viewport width minimum |
+| v3.4.11 | Add width bonuses to scoring |
+| v3.4.10 | Verbose sidebar detection logging |
+| v3.4.9 | Multi-strategy sidebar exclusion |
 
 ## Debug Commands
 
 In popup:
-- **🔍 Debug**: Highlights elements, logs positions/sizes to console
-- **📋 Scan**: Deep DOM structure analysis
+- **🔍 Debug**: Highlights container, logs to console
+- **Debug checkbox**: Enables verbose logging
 
-Console output format:
+Console output when Debug enabled:
 ```
-Claude.ai: Raw counts - user: 27 claude: 576
-Claude.ai: Found 60 message containers
-Claude Leash: COLLAPSING - total: 60, keep: 8, will hide: 52
-Claude Leash: Applied - 52 hidden, 8 visible
+Claude Leash DEBUG: Found container: 153697px scroll, 1320px wide...
+Claude Leash DEBUG: Found content parent at depth with 131 children...
+Claude Leash DEBUG: Hidden 127 blocks (146k px)
 ```
 
 ## Testing Checklist
 
-- [ ] Fresh page load shows correct total count
-- [ ] Clicking Collapse hides older messages
-- [ ] Clicking Show All reveals all messages
-- [ ] Slider adjustment changes keep-visible count
+- [ ] Container detected correctly (width > 800px)
+- [ ] Collapse hides older messages
+- [ ] Show All reveals everything
 - [ ] Badge updates correctly
-- [ ] New messages from Claude are detected
-- [ ] Works after page navigation
-- [ ] Theme toggle works
+- [ ] Works after session switch
+- [ ] No console errors
 
-## Key Classes/Selectors
-
-```javascript
-// Claude.ai
-'[class*="font-user-message"]'     // User messages
-'[class*="font-claude-response"]'  // Claude responses
-
-// Claude Code Web  
-'[data-testid^="conversation-turn-"]'  // Turn containers
-'[class*="overflow-y-auto"]'           // Scroll containers
-```
-
-## Useful Console Commands
+## Key Selectors
 
 ```javascript
-// Check what extension finds
-document.querySelectorAll('[class*="font-user-message"]').length
-document.querySelectorAll('[class*="font-claude-response"]').length
+// Container detection
+'[class*="overflow-y-auto"]'           // Tailwind scroll containers
+'[class*="overflow-y-scroll"]'         // Alternative scroll class
 
-// Manual hide test
-document.querySelectorAll('[class*="font-user-message"]')[0].parentElement.style.display = 'none'
+// Sidebar exclusion
+'bg-bg-'                               // Claude Code sidebar background
+'border-r-['                           // Sidebar right border
+'flex-shrink-0'                        // Fixed-width sidebar
+
+// Hidden content
+'.claude-leash-hidden'                 // Applied to hidden messages
+'#claude-leash-placeholder'            // "X blocks hidden" banner
 ```
-
-## Transcript Reference
-
-Full development session transcript at:
-`/mnt/transcripts/2025-12-11-12-39-19-claude-leash-element-detection-fix.txt`
