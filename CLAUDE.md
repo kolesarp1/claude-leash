@@ -490,24 +490,291 @@ function scheduleMemoryCleanup() {
 
 **What:** Implement virtual scrolling by intercepting Claude's scroll container.
 
-```javascript
-// Replace scroll container content with virtualized version
-function virtualizeMessages(container) {
-  const messages = [...container.children];
-  const virtualContainer = new VirtualScroller({
-    items: messages,
-    itemHeight: 'auto',
-    buffer: 5
-  });
+#### Why Virtual Scrolling Is The Real Fix
 
-  // Only render visible items + buffer
-  container.innerHTML = '';
-  container.appendChild(virtualContainer.render());
+Discord, Slack, VS Code, and every performant chat app uses virtual scrolling. Here's why:
+
+```
+Traditional Rendering (Claude.ai now):
+┌─────────────────────────────────────┐
+│ Message 1    ← In DOM, in memory   │
+│ Message 2    ← In DOM, in memory   │
+│ Message 3    ← In DOM, in memory   │
+│ ...          ← 500 messages...     │
+│ Message 500  ← In DOM, in memory   │
+└─────────────────────────────────────┘
+Memory: 500 React components, 500 DOM trees
+GC: Must scan all 500 component closures
+
+Virtual Scrolling:
+┌─────────────────────────────────────┐
+│ [Spacer: 45000px]  ← Just height   │
+│ Message 47   ← In DOM (visible)    │
+│ Message 48   ← In DOM (visible)    │ ← Viewport
+│ Message 49   ← In DOM (visible)    │
+│ Message 50   ← In DOM (visible)    │
+│ [Spacer: 5000px]   ← Just height   │
+└─────────────────────────────────────┘
+Memory: 4-10 React components only
+GC: Only scans visible component closures
+```
+
+#### Implementation Architecture
+
+```javascript
+class VirtualMessageList {
+  constructor(container, options = {}) {
+    this.container = container;
+    this.scrollContainer = container.parentElement;
+
+    // Configuration
+    this.bufferSize = options.buffer || 3;        // Messages above/below viewport
+    this.estimatedHeight = options.itemHeight || 200;  // Default guess
+
+    // State
+    this.messages = [];           // Original message data/elements
+    this.heights = new Map();     // Measured heights: index -> px
+    this.renderedRange = { start: 0, end: 0 };
+
+    // DOM structure
+    this.topSpacer = document.createElement('div');
+    this.bottomSpacer = document.createElement('div');
+    this.contentWrapper = document.createElement('div');
+
+    this.init();
+  }
+
+  init() {
+    // Capture existing messages before virtualizing
+    this.messages = [...this.container.children].map(el => ({
+      element: el,
+      height: el.offsetHeight,
+      html: el.outerHTML  // Serialize for re-creation
+    }));
+
+    // Measure all heights upfront (one-time cost)
+    this.messages.forEach((msg, i) => {
+      this.heights.set(i, msg.height);
+    });
+
+    // Replace content with virtual structure
+    this.container.innerHTML = '';
+    this.container.appendChild(this.topSpacer);
+    this.container.appendChild(this.contentWrapper);
+    this.container.appendChild(this.bottomSpacer);
+
+    // Initial render
+    this.updateVisibleRange();
+
+    // Listen for scroll
+    this.scrollContainer.addEventListener('scroll',
+      this.handleScroll.bind(this), { passive: true });
+
+    // Listen for resize
+    new ResizeObserver(() => this.updateVisibleRange())
+      .observe(this.scrollContainer);
+  }
+
+  getVisibleRange() {
+    const scrollTop = this.scrollContainer.scrollTop;
+    const viewportHeight = this.scrollContainer.clientHeight;
+
+    let accumulatedHeight = 0;
+    let startIndex = 0;
+    let endIndex = this.messages.length - 1;
+
+    // Find first visible message
+    for (let i = 0; i < this.messages.length; i++) {
+      const height = this.heights.get(i) || this.estimatedHeight;
+      if (accumulatedHeight + height > scrollTop) {
+        startIndex = Math.max(0, i - this.bufferSize);
+        break;
+      }
+      accumulatedHeight += height;
+    }
+
+    // Find last visible message
+    const viewportBottom = scrollTop + viewportHeight;
+    for (let i = startIndex; i < this.messages.length; i++) {
+      const height = this.heights.get(i) || this.estimatedHeight;
+      accumulatedHeight += height;
+      if (accumulatedHeight > viewportBottom) {
+        endIndex = Math.min(this.messages.length - 1, i + this.bufferSize);
+        break;
+      }
+    }
+
+    return { start: startIndex, end: endIndex };
+  }
+
+  updateVisibleRange() {
+    const newRange = this.getVisibleRange();
+
+    // Skip if range unchanged
+    if (newRange.start === this.renderedRange.start &&
+        newRange.end === this.renderedRange.end) {
+      return;
+    }
+
+    // Calculate spacer heights
+    let topHeight = 0;
+    for (let i = 0; i < newRange.start; i++) {
+      topHeight += this.heights.get(i) || this.estimatedHeight;
+    }
+
+    let bottomHeight = 0;
+    for (let i = newRange.end + 1; i < this.messages.length; i++) {
+      bottomHeight += this.heights.get(i) || this.estimatedHeight;
+    }
+
+    // Update spacers
+    this.topSpacer.style.height = `${topHeight}px`;
+    this.bottomSpacer.style.height = `${bottomHeight}px`;
+
+    // Render visible messages
+    this.contentWrapper.innerHTML = '';
+    for (let i = newRange.start; i <= newRange.end; i++) {
+      const msg = this.messages[i];
+      // Re-create element from stored HTML
+      const el = document.createElement('div');
+      el.innerHTML = msg.html;
+      const messageEl = el.firstElementChild;
+      this.contentWrapper.appendChild(messageEl);
+
+      // Update measured height after render
+      requestAnimationFrame(() => {
+        this.heights.set(i, messageEl.offsetHeight);
+      });
+    }
+
+    this.renderedRange = newRange;
+  }
+
+  handleScroll() {
+    // Throttle scroll handling
+    if (this._scrollRAF) return;
+    this._scrollRAF = requestAnimationFrame(() => {
+      this._scrollRAF = null;
+      this.updateVisibleRange();
+    });
+  }
+
+  // Called when new message arrives
+  appendMessage(element) {
+    const index = this.messages.length;
+    this.messages.push({
+      element,
+      height: this.estimatedHeight,
+      html: element.outerHTML
+    });
+
+    // If at bottom, render immediately
+    if (this.renderedRange.end === index - 1) {
+      this.updateVisibleRange();
+    } else {
+      // Just update bottom spacer
+      this.bottomSpacer.style.height =
+        `${parseInt(this.bottomSpacer.style.height) + this.estimatedHeight}px`;
+    }
+  }
+
+  destroy() {
+    // Restore original content
+    this.container.innerHTML = '';
+    this.messages.forEach(msg => {
+      const el = document.createElement('div');
+      el.innerHTML = msg.html;
+      this.container.appendChild(el.firstElementChild);
+    });
+  }
 }
 ```
 
-**Pros:** Proper solution - only visible messages in DOM
-**Cons:** Complex, breaks with any Claude DOM change, needs ongoing maintenance
+#### Key Challenges for Claude.ai
+
+| Challenge | Why It's Hard | Possible Solution |
+|-----------|--------------|-------------------|
+| **Variable heights** | Messages have code blocks, images, varying text | Measure once, cache heights |
+| **React reconciliation** | React expects its DOM to exist | Store outerHTML, recreate elements |
+| **Event handlers** | Click, copy, etc. need to work | Re-attach via event delegation |
+| **Dynamic content** | Streaming responses change height | ResizeObserver on visible items |
+| **Scroll position** | Must maintain position during updates | Calculate offset before/after |
+| **Code highlighting** | Syntax spans are expensive | Flatten on serialize, re-highlight on demand |
+
+#### Memory Impact Comparison
+
+For a 500-message session with code blocks:
+
+| Metric | Traditional | Virtual (10 visible) | Reduction |
+|--------|-------------|---------------------|-----------|
+| DOM nodes | ~50,000 | ~1,000 | **98%** |
+| React components | 500 | 10 | **98%** |
+| Event handlers | 2,000+ | 40 | **98%** |
+| Memory (estimated) | 150MB+ | 5-10MB | **93%+** |
+| GC scan time | 4+ seconds | <100ms | **97%** |
+
+#### Integration Points
+
+```javascript
+// In content.js, replace applyCollapse with virtualization:
+
+function enableVirtualScrolling() {
+  const container = getScrollContainer();
+  const contentParent = getContentParent(container);
+
+  if (!contentParent || contentParent._virtualized) return;
+
+  // Create virtual scroller
+  contentParent._virtualScroller = new VirtualMessageList(contentParent, {
+    buffer: 5,
+    itemHeight: 300  // Claude messages tend to be tall
+  });
+
+  contentParent._virtualized = true;
+
+  debugLog('Virtual scrolling enabled');
+}
+
+// Hook into Claude's message stream
+function observeNewMessages() {
+  const container = getScrollContainer();
+  const contentParent = getContentParent(container);
+
+  if (!contentParent._virtualScroller) return;
+
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach(mutation => {
+      mutation.addedNodes.forEach(node => {
+        if (node.nodeType === 1) {
+          contentParent._virtualScroller.appendMessage(node);
+        }
+      });
+    });
+  });
+
+  observer.observe(contentParent, { childList: true });
+}
+```
+
+#### Why This Is "Not Future-Proof"
+
+1. **Claude DOM changes**: Any change to message structure breaks serialization
+2. **React internal changes**: New React versions may handle DOM differently
+3. **Feature additions**: New interactive features may not work after re-creation
+4. **Copy/paste**: Cloned elements may lose clipboard handlers
+5. **Streaming**: Live typing indicators need special handling
+
+#### Recommendation
+
+Virtual scrolling is the **correct architectural solution** but requires:
+- Significant development effort (est. 40-80 hours)
+- Ongoing maintenance as Claude.ai updates
+- Comprehensive testing across features
+- Fallback mechanism when things break
+
+**For v4.0+**: Implement behind `enableExperimentalVirtualScrolling` flag with clear warnings.
+
+**Better long-term**: File feature request for Anthropic to implement this natively - they have access to React internals and can do this properly.
 
 ## Recommended Path Forward
 
