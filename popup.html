@@ -327,6 +327,61 @@
       accent-color: #8b5cf6;
       cursor: pointer;
     }
+
+    /* Tip banner */
+    .tip-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-bottom: 14px;
+      font-size: 12px;
+    }
+
+    body.light .tip-banner {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    body.dark .tip-banner {
+      background: #422006;
+      color: #fbbf24;
+    }
+
+    .tip-icon {
+      flex-shrink: 0;
+    }
+
+    .tip-text {
+      flex: 1;
+    }
+
+    .tip-dismiss {
+      background: none;
+      border: none;
+      font-size: 16px;
+      cursor: pointer;
+      opacity: 0.6;
+      transition: opacity 0.2s;
+    }
+
+    .tip-dismiss:hover {
+      opacity: 1;
+    }
+
+    body.light .tip-dismiss {
+      color: #92400e;
+    }
+
+    body.dark .tip-dismiss {
+      color: #fbbf24;
+    }
+
+    /* Debug tools */
+    .debug-tools {
+      margin-bottom: 14px;
+    }
   </style>
 </head>
 <body class="light">
@@ -377,6 +432,24 @@
         <input type="checkbox" id="debugMode">
         Debug
       </label>
+    </div>
+  </div>
+
+  <!-- First-time user tip -->
+  <div class="tip-banner" id="tipBanner" style="display: none;">
+    <span class="tip-icon">💡</span>
+    <span class="tip-text">Scroll up to progressively reveal hidden messages</span>
+    <button class="tip-dismiss" id="tipDismiss">×</button>
+  </div>
+
+  <!-- Debug tools (shown when debug mode enabled) -->
+  <div class="debug-tools" id="debugTools" style="display: none;">
+    <div class="control-group">
+      <label class="control-label">Debug Tools</label>
+      <div class="buttons">
+        <button class="btn btn-secondary" id="exportMetricsBtn" title="Export metrics as JSON">📊 Export</button>
+        <button class="btn btn-secondary" id="measureFpsBtn" title="Measure FPS for 3 seconds">⏱️ FPS</button>
+      </div>
     </div>
   </div>
 

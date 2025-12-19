@@ -4,6 +4,7 @@
 
   const STORAGE_KEY = 'claudeCollapseSettings';
   const THEME_KEY = 'claudeLeashTheme';
+  const TIP_DISMISSED_KEY = 'claudeLeashTipDismissed';
 
   let currentTab = null;
   let isCollapsed = false;
@@ -31,6 +32,11 @@
   const themeLightBtn = document.getElementById('themeLightBtn');
   const themeDarkBtn = document.getElementById('themeDarkBtn');
   const themeAutoBtn = document.getElementById('themeAutoBtn');
+  const tipBannerEl = document.getElementById('tipBanner');
+  const tipDismissEl = document.getElementById('tipDismiss');
+  const debugToolsEl = document.getElementById('debugTools');
+  const exportMetricsBtn = document.getElementById('exportMetricsBtn');
+  const measureFpsBtn = document.getElementById('measureFpsBtn');
 
   // Format pixel value for display
   function formatPixels(px) {
@@ -82,6 +88,57 @@
     if (currentTheme === 'auto') applyTheme('auto');
   });
 
+  // ============ Tip banner handling ============
+  async function checkAndShowTip() {
+    try {
+      const result = await chrome.storage.local.get(TIP_DISMISSED_KEY);
+      if (!result[TIP_DISMISSED_KEY]) {
+        tipBannerEl.style.display = 'flex';
+      }
+    } catch (e) {
+      // Show tip by default
+      tipBannerEl.style.display = 'flex';
+    }
+  }
+
+  async function dismissTip() {
+    tipBannerEl.style.display = 'none';
+    try {
+      await chrome.storage.local.set({ [TIP_DISMISSED_KEY]: true });
+    } catch (e) {}
+  }
+
+  // ============ Debug tools handling ============
+  function updateDebugTools() {
+    debugToolsEl.style.display = debugMode ? 'block' : 'none';
+  }
+
+  async function exportMetrics() {
+    const response = await sendMessage('getMetrics');
+    if (response?.success && response.metrics) {
+      // Download as JSON file
+      const blob = new Blob([JSON.stringify(response.metrics, null, 2)], {
+        type: 'application/json'
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `claude-leash-metrics-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      statusEl.textContent = 'Metrics exported!';
+    } else {
+      statusEl.textContent = 'Failed to export metrics';
+    }
+  }
+
+  async function measureFPS() {
+    const response = await sendMessage('measureFPS', { duration: 3000 });
+    if (response?.success) {
+      statusEl.textContent = 'Measuring FPS (3s)... Check console';
+    }
+  }
+
   // ============ Settings handling ============
   async function loadSettings() {
     try {
@@ -108,6 +165,7 @@
       enableClaudeCodeEl.checked = enableClaudeCode;
       debugModeEl.checked = debugMode;
       updateToggleButton();
+      updateDebugTools();
     } catch (e) {}
   }
 
@@ -187,6 +245,7 @@
   // ============ Initialize ============
   async function init() {
     await loadTheme();
+    await checkAndShowTip();
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     currentTab = tab;
@@ -271,9 +330,17 @@
   // Debug mode checkbox
   debugModeEl.addEventListener('change', async () => {
     debugMode = debugModeEl.checked;
+    updateDebugTools();
     await saveSettings();
     await sendMessage('setDebugMode', { enabled: debugMode });
   });
+
+  // Tip dismiss
+  tipDismissEl.addEventListener('click', dismissTip);
+
+  // Debug tools
+  exportMetricsBtn.addEventListener('click', exportMetrics);
+  measureFpsBtn.addEventListener('click', measureFPS);
 
   init();
 })();

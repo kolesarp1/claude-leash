@@ -1,4 +1,4 @@
-// Claude Leash - Content Script v3.4.15
+// Claude Leash - Content Script v3.5.0
 // Proactive content hiding for snappy performance
 (function() {
   'use strict';
@@ -6,8 +6,12 @@
   // ============ Constants ============
   const STORAGE_KEY = 'claudeCollapseSettings';
   const SESSION_KEY = 'claudeLeashSessions';
+  const METRICS_KEY = 'claudeLeashMetrics';
   const PLACEHOLDER_ID = 'claude-leash-placeholder';
   const STYLE_ID = 'claude-leash-styles';
+
+  // Storage version for migrations
+  const STORAGE_VERSION = 1;
 
   // Timing constants
   const POLLING_INTERVAL_MS = 300;
@@ -32,6 +36,257 @@
   const MAX_CONTENT_DEPTH = 15;
   const MAX_SESSIONS_STORED = 50;
   const CACHE_MATCH_THRESHOLD = 0.7; // 70% match for fast path
+
+  // ============ DOM Selectors Configuration ============
+  // Future-proof: Update these when Claude changes its DOM structure
+  const DOM_SELECTORS = {
+    // Scroll container detection
+    container: {
+      // Primary: Tailwind overflow classes
+      primary: '[class*="overflow-y-auto"], [class*="overflow-auto"], [class*="overflow-y-scroll"]',
+      // Fallback: Any scrollable div (checked via getComputedStyle)
+      fallback: 'div'
+    },
+    // Sidebar exclusion patterns
+    sidebar: {
+      // Class patterns that indicate sidebar
+      classPatterns: ['bg-bg-', 'border-r-[', 'border-r ', 'flex-shrink-0'],
+      // Position-based: left edge + narrow width
+      maxLeftPosition: 50,
+      maxWidth: 800,
+      viewportWidthRatio: 0.6
+    },
+    // Content children filtering
+    content: {
+      validTag: 'DIV',
+      minHeight: 10,
+      minWidth: 50
+    }
+  };
+
+  // ============ Message Validation ============
+  // Validate incoming messages from popup/background
+  function validateMessage(message) {
+    if (!message || typeof message !== 'object') {
+      return { valid: false, error: 'Invalid message format' };
+    }
+    if (!message.action || typeof message.action !== 'string') {
+      return { valid: false, error: 'Missing or invalid action' };
+    }
+    // Validate numeric parameters
+    if (message.maxHeight !== undefined) {
+      if (typeof message.maxHeight !== 'number' || message.maxHeight < 1000 || message.maxHeight > 200000) {
+        return { valid: false, error: 'maxHeight must be number between 1000-200000' };
+      }
+    }
+    if (message.maxLines !== undefined) {
+      if (typeof message.maxLines !== 'number' || message.maxLines < 1 || message.maxLines > 10000) {
+        return { valid: false, error: 'maxLines must be number between 1-10000' };
+      }
+    }
+    // Validate boolean parameters
+    if (message.isCollapsed !== undefined && typeof message.isCollapsed !== 'boolean') {
+      return { valid: false, error: 'isCollapsed must be boolean' };
+    }
+    if (message.enableClaudeAi !== undefined && typeof message.enableClaudeAi !== 'boolean') {
+      return { valid: false, error: 'enableClaudeAi must be boolean' };
+    }
+    if (message.enableClaudeCode !== undefined && typeof message.enableClaudeCode !== 'boolean') {
+      return { valid: false, error: 'enableClaudeCode must be boolean' };
+    }
+    if (message.enabled !== undefined && typeof message.enabled !== 'boolean') {
+      return { valid: false, error: 'enabled must be boolean' };
+    }
+    return { valid: true };
+  }
+
+  // ============ Performance Monitor ============
+  // Local-only metrics collection for measuring extension effectiveness
+  const perfMonitor = {
+    metrics: {
+      fps: [],
+      hideLatency: [],
+      restoreLatency: [],
+      containerDetectionTime: [],
+      sessionSwitchTime: []
+    },
+    maxSamples: 100,
+
+    // Measure FPS during scrolling
+    measureFPS(duration = 3000) {
+      let frameCount = 0;
+      const startTime = performance.now();
+
+      const countFrame = () => {
+        frameCount++;
+        const elapsed = performance.now() - startTime;
+
+        if (elapsed < duration) {
+          requestAnimationFrame(countFrame);
+        } else {
+          const fps = Math.round((frameCount / elapsed) * 1000);
+          this.recordMetric('fps', fps);
+        }
+      };
+
+      requestAnimationFrame(countFrame);
+    },
+
+    // Create a latency measurement timer
+    startTimer(metricType) {
+      const start = performance.now();
+      return {
+        complete: () => {
+          const duration = performance.now() - start;
+          perfMonitor.recordMetric(metricType, duration);
+          return duration;
+        }
+      };
+    },
+
+    // Record a metric value
+    recordMetric(type, value) {
+      if (!this.metrics[type]) {
+        this.metrics[type] = [];
+      }
+
+      this.metrics[type].push({
+        value,
+        timestamp: Date.now()
+      });
+
+      // Keep only last maxSamples
+      if (this.metrics[type].length > this.maxSamples) {
+        this.metrics[type].shift();
+      }
+
+      // Persist asynchronously (debounced via setTimeout)
+      this.saveMetricsDebounced();
+    },
+
+    saveMetricsDebounced() {
+      if (this._saveTimeout) return;
+      this._saveTimeout = setTimeout(() => {
+        this._saveTimeout = null;
+        this.saveMetrics();
+      }, 5000); // Save every 5 seconds max
+    },
+
+    async saveMetrics() {
+      try {
+        await chrome.storage.local.set({
+          [METRICS_KEY]: {
+            version: STORAGE_VERSION,
+            metrics: this.metrics,
+            lastUpdated: Date.now()
+          }
+        });
+      } catch (e) {
+        // Silent fail
+      }
+    },
+
+    async loadMetrics() {
+      try {
+        const result = await chrome.storage.local.get(METRICS_KEY);
+        if (result[METRICS_KEY]?.metrics) {
+          this.metrics = result[METRICS_KEY].metrics;
+        }
+      } catch (e) {
+        // Silent fail
+      }
+    },
+
+    // Get statistical summary for a metric type
+    getStats(metricType) {
+      const values = (this.metrics[metricType] || []).map(m => m.value);
+
+      if (values.length === 0) return null;
+
+      const sorted = [...values].sort((a, b) => a - b);
+      const sum = values.reduce((a, b) => a + b, 0);
+
+      return {
+        count: values.length,
+        min: sorted[0],
+        max: sorted[sorted.length - 1],
+        mean: sum / values.length,
+        median: sorted[Math.floor(sorted.length / 2)],
+        p95: sorted[Math.floor(sorted.length * 0.95)] || sorted[sorted.length - 1],
+        p99: sorted[Math.floor(sorted.length * 0.99)] || sorted[sorted.length - 1]
+      };
+    },
+
+    // Export all metrics as JSON
+    exportMetrics() {
+      const data = {
+        version: STORAGE_VERSION,
+        exportedAt: new Date().toISOString(),
+        metrics: {}
+      };
+
+      for (const [type, values] of Object.entries(this.metrics)) {
+        data.metrics[type] = {
+          stats: this.getStats(type),
+          samples: values.length
+        };
+      }
+
+      return data;
+    },
+
+    // Display metrics in console (for debug mode)
+    displayDashboard() {
+      console.group('📊 Claude Leash Performance Metrics');
+
+      for (const type of Object.keys(this.metrics)) {
+        const stats = this.getStats(type);
+        if (stats) {
+          const unit = type === 'fps' ? ' fps' : 'ms';
+          console.group(type);
+          console.log(`  Count: ${stats.count}`);
+          console.log(`  Mean: ${stats.mean.toFixed(2)}${unit}`);
+          console.log(`  Median: ${stats.median.toFixed(2)}${unit}`);
+          console.log(`  Min: ${stats.min.toFixed(2)}${unit}`);
+          console.log(`  Max: ${stats.max.toFixed(2)}${unit}`);
+          console.log(`  P95: ${stats.p95.toFixed(2)}${unit}`);
+          console.groupEnd();
+        }
+      }
+
+      console.groupEnd();
+    }
+  };
+
+  // ============ Storage Migration ============
+  async function migrateStorageIfNeeded() {
+    try {
+      const result = await chrome.storage.local.get(STORAGE_KEY);
+      const settings = result[STORAGE_KEY];
+
+      if (!settings) return;
+
+      // Check if migration needed
+      if (!settings.version || settings.version < STORAGE_VERSION) {
+        // Migrate from unversioned to v1
+        const migrated = {
+          ...settings,
+          version: STORAGE_VERSION
+        };
+
+        // Convert maxLines to maxHeight if needed
+        if (settings.maxLines && !settings.maxHeight) {
+          migrated.maxHeight = settings.maxLines * 24;
+          delete migrated.maxLines;
+        }
+
+        await chrome.storage.local.set({ [STORAGE_KEY]: migrated });
+        debugLog('Migrated settings to version', STORAGE_VERSION);
+      }
+    } catch (e) {
+      debugLog('Migration error:', e.message);
+    }
+  }
 
   // Debug mode (loaded from storage, default false)
   let DEBUG_MODE = false;
@@ -223,6 +478,7 @@
       }
     }
 
+    const detectionTimer = forceRefresh ? perfMonitor.startTimer('containerDetectionTime') : null;
     const viewportHeight = window.innerHeight;
     let best = null;
     let bestScore = 0;
@@ -266,8 +522,8 @@
       }
 
       // 1. Class-based: Claude Code Web sidebar has distinctive classes
-      if (hasBgBg || hasBorderR) {
-        debugLog(`EXCLUDED by class: ${rect.width}px wide`);
+      if (hasSidebarClass) {
+        debugLog(`EXCLUDED by class pattern: ${rect.width}px wide`);
         return 0;
       }
       // 2. Position-based: left-edge panels narrower than main content
@@ -305,7 +561,7 @@
     }
 
     // Strategy 1: Try CSS class-based detection (Tailwind overflow classes)
-    const overflowContainers = document.querySelectorAll('[class*="overflow-y-auto"], [class*="overflow-auto"], [class*="overflow-y-scroll"]');
+    const overflowContainers = document.querySelectorAll(DOM_SELECTORS.container.primary);
 
     for (const container of overflowContainers) {
       const score = scoreContainer(container);
@@ -317,7 +573,7 @@
 
     // Strategy 2: Scan divs with getComputedStyle (limited, for non-Tailwind containers)
     if (!best || bestScore < 10000) {
-      const allDivs = document.querySelectorAll('div');
+      const allDivs = document.querySelectorAll(DOM_SELECTORS.container.fallback);
       const maxDivsToCheck = Math.min(allDivs.length, 400);
 
       for (let i = 0; i < maxDivsToCheck; i++) {
@@ -348,6 +604,7 @@
       const rect = best.getBoundingClientRect();
       debugLog(`Found container: ${best.scrollHeight}px scroll, ${Math.round(rect.width)}px wide, ${Math.round(rect.height)}px tall, score=${bestScore}, classes=${best.className.slice(0,50)}`);
     } else {
+      if (detectionTimer) detectionTimer.complete();
       debugLog('No container found!');
     }
     return cachedContainer;
@@ -399,12 +656,13 @@
 
   function getContentChildren(contentParent) {
     if (!contentParent) return [];
+    const contentConfig = DOM_SELECTORS.content;
     return [...contentParent.children].filter(c => {
-      if (c.tagName !== 'DIV') return false;
+      if (c.tagName !== contentConfig.validTag) return false;
       if (c.id === PLACEHOLDER_ID) return false;
       if (c.classList.contains('claude-leash-hidden')) return false;
       const rect = c.getBoundingClientRect();
-      return rect.height > 10 && rect.width > 50;
+      return rect.height > contentConfig.minHeight && rect.width > contentConfig.minWidth;
     });
   }
 
@@ -554,6 +812,8 @@
       if (hiddenNodes.length > 0 && (!placeholder || !placeholder.parentElement)) {
         placeholder = createPlaceholder(totalHiddenHeight, hiddenNodes.length);
         contentParent.insertBefore(placeholder, contentParent.firstChild);
+        // Setup IntersectionObserver for smooth progressive restore
+        setupPlaceholderObserver();
       } else if (placeholder) {
         updatePlaceholder();
       }
@@ -571,6 +831,9 @@
   function applyCollapse(maxHeight, isCollapsed, enableClaudeAi, enableClaudeCode) {
     if (isApplying) return { success: true };
     isApplying = true;
+
+    // Start performance timer
+    const hideTimer = perfMonitor.startTimer('hideLatency');
 
     try {
       currentSettings.maxHeight = maxHeight;
@@ -640,6 +903,8 @@
         if (!placeholder || !placeholder.parentElement) {
           placeholder = createPlaceholder(hiddenHeight, hiddenNodes.length);
           contentParent.insertBefore(placeholder, contentParent.firstChild);
+          // Setup IntersectionObserver for smooth progressive restore
+          setupPlaceholderObserver();
         } else {
           updatePlaceholder();
         }
@@ -663,6 +928,10 @@
         saveSessionState();
       }, 50);
 
+      // Complete performance measurement
+      const latency = hideTimer.complete();
+      debugLog(`Hide operation completed in ${latency.toFixed(2)}ms`);
+
       return {
         success: true,
         totalHeight: Math.round(originalTotalHeight),
@@ -671,7 +940,8 @@
         total: Math.round(originalTotalHeight),
         hidden: Math.round(hiddenHeight),
         visible: Math.round(visibleHeight),
-        hiddenCount: hiddenNodes.length
+        hiddenCount: hiddenNodes.length,
+        latency: Math.round(latency)
       };
     } finally {
       isApplying = false;
@@ -762,7 +1032,9 @@
     }).catch(() => {});
   }
 
-  // ============ Scroll Detection ============
+  // ============ Scroll Detection with IntersectionObserver ============
+
+  let placeholderObserver = null;
 
   function setupScrollDetection() {
     let lastScrollTop = 0;
@@ -790,12 +1062,48 @@
     }, true);
   }
 
+  // Enhanced restore using IntersectionObserver - smoother than scroll-based
+  function setupPlaceholderObserver() {
+    // Clean up existing observer
+    if (placeholderObserver) {
+      placeholderObserver.disconnect();
+      placeholderObserver = null;
+    }
+
+    if (!placeholder || !document.contains(placeholder)) return;
+
+    // Create observer that triggers when placeholder becomes visible
+    placeholderObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting && hiddenNodes.length > 0) {
+          // Placeholder is visible - user is scrolling up to see more content
+          debugLog('Placeholder visible via IntersectionObserver, restoring chunk');
+          restoreChunk(5); // Restore more messages when using IO
+
+          // Re-setup observer if there are still hidden nodes
+          if (hiddenNodes.length > 0 && placeholder && document.contains(placeholder)) {
+            // Small delay to prevent rapid-fire restores
+            setTimeout(() => setupPlaceholderObserver(), 100);
+          }
+        }
+      });
+    }, {
+      root: getScrollContainer(), // Observe within the scroll container
+      rootMargin: '100px 0px 0px 0px', // Trigger slightly before placeholder is fully visible
+      threshold: 0.1 // Trigger when 10% visible
+    });
+
+    placeholderObserver.observe(placeholder);
+    debugLog('IntersectionObserver attached to placeholder');
+  }
+
   // ============ Session/URL Change Detection ============
 
   async function handleSessionChange() {
     const newSessionId = getSessionId();
     if (newSessionId === currentSessionId) return;
 
+    const sessionTimer = perfMonitor.startTimer('sessionSwitchTime');
     debugLog(`Session change ${currentSessionId} -> ${newSessionId}`);
 
     // Cancel any pending detection from previous session
@@ -825,6 +1133,7 @@
     const shouldCollapse = currentSettings.isCollapsed || (prevState && prevState.isCollapsed);
 
     if (!shouldCollapse || !isEnabledForCurrentInterface() || !reactHydrated) {
+      sessionTimer.complete();
       return;
     }
 
@@ -861,6 +1170,7 @@
             // Content has loaded enough - apply collapse immediately
             debugLog(`Fast path hit! (${Math.round(currentHeight/1000)}k / ${Math.round(cachedContent.scrollHeight/1000)}k = ${(heightRatio * 100).toFixed(0)}%)`);
             applyCollapse(currentSettings.maxHeight, true);
+            sessionTimer.complete();
             return;
           }
         }
@@ -873,12 +1183,17 @@
     // Slow path: wait for content to load and stabilize
     try {
       await waitForContent(signal);
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        sessionTimer.complete();
+        return;
+      }
 
       if (currentSettings.isCollapsed) {
         applyCollapse(currentSettings.maxHeight, true);
       }
+      sessionTimer.complete();
     } catch (e) {
+      sessionTimer.complete();
       if (e.name === 'AbortError') {
         debugLog('Content detection aborted');
       } else {
@@ -1010,6 +1325,14 @@
   // ============ Message Handler ============
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Validate incoming message
+    const validation = validateMessage(message);
+    if (!validation.valid) {
+      console.warn('Claude Leash: Invalid message received:', validation.error);
+      sendResponse({ success: false, error: validation.error });
+      return true;
+    }
+
     try {
       switch (message.action) {
         case 'collapse':
@@ -1096,6 +1419,21 @@
           sendResponse({ success: true, debugMode: DEBUG_MODE });
           break;
 
+        case 'getMetrics':
+          const metricsData = perfMonitor.exportMetrics();
+          sendResponse({ success: true, metrics: metricsData });
+          break;
+
+        case 'showMetrics':
+          perfMonitor.displayDashboard();
+          sendResponse({ success: true });
+          break;
+
+        case 'measureFPS':
+          perfMonitor.measureFPS(message.duration || 3000);
+          sendResponse({ success: true, message: 'FPS measurement started' });
+          break;
+
         default:
           sendResponse({ success: false, error: 'Unknown action' });
       }
@@ -1109,7 +1447,11 @@
   // ============ Init ============
 
   async function init() {
+    // Run storage migration if needed
+    await migrateStorageIfNeeded();
+
     await loadSettings();
+    await perfMonitor.loadMetrics();
     currentSessionId = getSessionId();
 
     setupScrollDetection();

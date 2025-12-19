@@ -17,6 +17,8 @@ The extension successfully:
 - Shows badge with visible content amount (e.g., "9k")
 - Supports Light/Dark/Auto themes
 - Works on both Claude.ai and Claude Code Web
+- Includes session caching for fast switching
+- Validates all incoming messages for security
 
 ## File Structure
 
@@ -37,7 +39,50 @@ claude-leash/
         └── pr-checklist.md  # PR verification checklist
 ```
 
-## Key Detection Logic (content.js)
+## Architecture
+
+### Key Components
+
+1. **DOM_SELECTORS Configuration** (`content.js:36-61`)
+   ```javascript
+   const DOM_SELECTORS = {
+     container: {
+       primary: '[class*="overflow-y-auto"], [class*="overflow-auto"]...',
+       fallback: 'div'
+     },
+     sidebar: {
+       classPatterns: ['bg-bg-', 'border-r-[', 'border-r ', 'flex-shrink-0'],
+       maxLeftPosition: 50,
+       maxWidth: 800,
+       viewportWidthRatio: 0.6
+     },
+     content: { validTag: 'DIV', minHeight: 10, minWidth: 50 }
+   };
+   ```
+   **Purpose**: Future-proof against Claude DOM changes. Update these selectors instead of hunting through code.
+
+2. **Message Validation** (`content.js:63-97`)
+   - Validates all incoming chrome.runtime messages
+   - Enforces bounds: maxHeight (1000-200000), maxLines (1-10000)
+   - Type-checks all boolean parameters
+
+3. **Container Detection** (`content.js:212-320`)
+   - Scores containers by: scroll height + viewport fill bonus
+   - Excludes sidebars via class patterns + position heuristics
+   - Uses configurable selectors from DOM_SELECTORS
+
+4. **Session Management** (`content.js:685-818`)
+   - Caches content info per session ID
+   - Fast-path: <1.5s restore for cached sessions
+   - Slow-path: Wait for content to stabilize (up to 8s)
+   - AbortController prevents race conditions
+
+5. **Early Intervention** (`content.js:407-439`)
+   - MutationObserver watches for new content
+   - Immediately hides new content if collapsed
+   - Uses requestAnimationFrame for smooth updates
+
+### Key Constants
 
 **Container Detection (lines ~212-320):**
 ```javascript
