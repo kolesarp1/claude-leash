@@ -361,3 +361,170 @@ if (isMyNewPattern) {
 3. Click "Inspect views: service worker"
 4. Check Console tab for background.js errors
 ```
+
+## Performance Reality Check
+
+### What This Extension Actually Helps With
+
+Based on Chrome DevTools performance trace analysis of a slow Claude session:
+
+| Performance Issue | Time Impact | Does Extension Help? |
+|------------------|-------------|---------------------|
+| **Garbage Collection** | 4.3 seconds | ❌ NO - hidden elements still in memory |
+| **Long JS Tasks** | 2+ seconds each | ❌ NO - can't affect Claude's code |
+| **React Re-renders** | 185 events | ❌ NO - `display:none` doesn't stop reconciliation |
+| **Layout/Reflow** | 1.4 seconds | ⚠️ PARTIAL - hidden elements skip layout |
+| **Paint/Composite** | 230ms | ✅ YES - hidden elements don't paint |
+
+**Honest assessment: The extension helps with ~10-15% of the actual slowdown.**
+
+### Why CSS Hiding Has Limits
+
+```javascript
+// What we do:
+node.classList.add('claude-leash-hidden');
+// CSS: display: none !important;
+
+// What this means:
+// ✅ Element removed from render tree (no paint/layout)
+// ❌ Element still in DOM (memory allocated)
+// ❌ React still tracks component (reconciliation runs)
+// ❌ Event handlers still attached (GC pressure)
+// ❌ All child nodes still exist (syntax highlight spans, etc.)
+```
+
+A 500-message session with code blocks might have:
+- 500+ React component instances (~2-5KB each)
+- 2000+ event handlers
+- 10,000+ syntax highlighting spans
+- **All still in memory, all still causing GC pressure**
+
+### The Core Constraint
+
+From CLAUDE.md architecture guidelines:
+> "Never remove DOM nodes - only use CSS hiding"
+
+This is necessary because **removing nodes breaks React hydration**. But it also means we can't solve the real problem (memory/GC).
+
+## Aggressive Performance Options (Not Future-Proof)
+
+These approaches could genuinely help but may break with Claude.ai updates:
+
+### Option 1: Selective DOM Removal (High Risk, High Reward)
+
+**What:** Actually remove very old messages (500+ back) from DOM, store in IndexedDB.
+
+```javascript
+// EXPERIMENTAL - breaks React but frees memory
+function aggressiveCleanup(messages, keepLast = 100) {
+  const toRemove = messages.slice(0, -keepLast);
+
+  // Store content before removal
+  toRemove.forEach(msg => {
+    const content = msg.innerHTML;
+    indexedDB.put('messages', { id: msg.dataset.id, content });
+    msg.remove(); // ⚠️ BREAKS REACT STATE
+  });
+}
+```
+
+**Pros:** Actually frees memory, reduces GC pressure
+**Cons:** Breaks React, can't restore without page refresh, may cause errors
+
+### Option 2: Detach Event Listeners (Medium Risk)
+
+**What:** Remove event handlers from hidden elements to reduce GC roots.
+
+```javascript
+function detachListeners(node) {
+  // Clone node without event listeners
+  const clone = node.cloneNode(true);
+  node.parentNode.replaceChild(clone, node);
+  return clone;
+}
+```
+
+**Pros:** Reduces memory pressure from handler closures
+**Cons:** Breaks interactivity if restored, React may re-attach anyway
+
+### Option 3: Flatten Syntax Highlighting (Medium Risk)
+
+**What:** Replace deeply nested syntax highlight spans with plain text + class.
+
+```javascript
+function flattenCodeBlocks(container) {
+  container.querySelectorAll('pre code').forEach(code => {
+    // Hundreds of nested <span> elements → one text node
+    const text = code.textContent;
+    code.innerHTML = '';
+    code.textContent = text;
+    code.classList.add('flattened');
+  });
+}
+```
+
+**Pros:** Massive DOM node reduction (100s → 1 per code block)
+**Cons:** Loses syntax highlighting colors, may break copy functionality
+
+### Option 4: RequestIdleCallback Cleanup (Low Risk)
+
+**What:** Use idle time to null out references in hidden nodes.
+
+```javascript
+function scheduleMemoryCleanup() {
+  requestIdleCallback((deadline) => {
+    while (deadline.timeRemaining() > 0 && hiddenNodes.length > 100) {
+      const old = hiddenNodes[0];
+      // Clear internal references (weak mitigation)
+      old.node.__reactFiber$ = undefined;
+      old.node.__reactProps$ = undefined;
+    }
+  });
+}
+```
+
+**Pros:** Non-blocking, won't cause visible issues
+**Cons:** React may recreate references, limited impact
+
+### Option 5: Virtual Scrolling Polyfill (High Effort)
+
+**What:** Implement virtual scrolling by intercepting Claude's scroll container.
+
+```javascript
+// Replace scroll container content with virtualized version
+function virtualizeMessages(container) {
+  const messages = [...container.children];
+  const virtualContainer = new VirtualScroller({
+    items: messages,
+    itemHeight: 'auto',
+    buffer: 5
+  });
+
+  // Only render visible items + buffer
+  container.innerHTML = '';
+  container.appendChild(virtualContainer.render());
+}
+```
+
+**Pros:** Proper solution - only visible messages in DOM
+**Cons:** Complex, breaks with any Claude DOM change, needs ongoing maintenance
+
+## Recommended Path Forward
+
+### Short-term (Current Extension)
+1. Market as "smoother scrolling" not "performance fix"
+2. Help with what we can (paint/layout)
+3. Add metrics so users can see actual impact
+
+### Medium-term (v4.0)
+1. Implement Option 3 (flatten code blocks) behind a flag
+2. Implement Option 4 (idle cleanup) as default
+3. Add "Aggressive Mode" toggle for Options 1-2
+
+### Long-term (Feature Request)
+The real fix must come from Anthropic:
+- Claude.ai needs virtualized message lists (like Discord/Slack)
+- Only visible messages should be in DOM
+- Old messages loaded on-demand when scrolling up
+
+**File a feature request:** https://github.com/anthropics/claude-code/issues

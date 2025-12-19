@@ -1,28 +1,38 @@
 # Claude Leash 🐕
 
-**Keep your Claude context on a leash** - A Chrome extension that improves Claude.ai and Claude Code Web performance by hiding old messages during long conversations.
+**Keep your Claude context on a leash** - A Chrome extension that improves scrolling and rendering performance on Claude.ai and Claude Code Web by hiding old messages during long conversations.
 
-![Version](https://img.shields.io/badge/version-3.5.0-blue)
+![Version](https://img.shields.io/badge/version-3.5.1-blue)
 ![Platform](https://img.shields.io/badge/platform-Chrome-green)
 ![Manifest](https://img.shields.io/badge/manifest-v3-orange)
 
 ## The Problem
 
-Long conversations with Claude (100+ messages) become sluggish due to the browser rendering hundreds of message elements. The UI lag isn't from the AI context window - it's from rendering all those code blocks, diffs, and formatted responses.
+Long conversations with Claude (100+ messages) become sluggish. Performance trace analysis shows:
 
-**Without Extension:**
-- Scrolling: 20-30 fps (janky)
-- Input latency: 200-500ms
-- CPU usage: 50-80%
+| Issue | Impact |
+|-------|--------|
+| Garbage Collection | 4+ seconds |
+| Long JavaScript Tasks | 2+ seconds blocking |
+| Layout Recalculation | 1.4 seconds |
+| React Re-renders | 185 events |
 
-## The Solution
+## What This Extension Does
 
-Claude Leash hides older messages from the DOM using CSS `display: none` while keeping them in Claude's context. You get a snappy UI while maintaining full conversation history for the AI.
+Claude Leash hides older messages using CSS `display: none`. This helps with **rendering performance** (paint/layout) but does NOT fix memory or JavaScript issues.
 
-**With Extension:**
-- Scrolling: 55-60 fps (smooth)
-- Input latency: <50ms
-- CPU usage: <15%
+### Realistic Expectations
+
+| Metric | Improvement |
+|--------|-------------|
+| Scroll smoothness | ✅ Noticeable improvement |
+| Paint/composite | ✅ Hidden elements don't paint |
+| Layout calculations | ✅ Hidden elements skip layout |
+| Memory usage | ❌ No improvement (nodes still in DOM) |
+| GC pauses | ❌ No improvement |
+| React re-renders | ❌ No improvement |
+
+**Bottom line:** This extension helps with ~10-15% of the slowdown. It makes scrolling smoother but won't fix the 2+ second freezes caused by garbage collection.
 
 ## Features
 
@@ -60,28 +70,31 @@ When collapsed, scroll to the top of the conversation to progressively reveal hi
 
 The extension uses CSS `display: none` to hide message elements from rendering. Messages remain in the DOM and Claude's context - they're just not being painted by the browser.
 
-### Performance vs RAM
+### What CSS `display: none` Actually Does
 
-**What `display: none` saves:**
+**What IS helped:**
 | Benefit | Impact |
 |---------|--------|
-| Render tree memory | ✅ Reduced |
-| Layout calculations | ✅ Skipped |
-| Paint operations | ✅ Eliminated |
-| GPU compositing layers | ✅ Freed |
-| Computed style recalcs | ✅ Avoided |
+| Layout calculations | ✅ Hidden elements skip layout |
+| Paint operations | ✅ Hidden elements don't paint |
+| GPU compositing | ✅ Fewer layers to composite |
 
-**What remains in memory:**
+**What is NOT helped:**
 | Resource | Status |
 |----------|--------|
-| DOM nodes | Still in memory |
-| Text content | Still stored |
+| DOM nodes | ❌ Still in memory |
+| React components | ❌ Still tracked, still reconcile |
+| Event handlers | ❌ Still attached, cause GC pressure |
+| Syntax highlight spans | ❌ 100s per code block, still exist |
 
-**Bottom line:** The real win is CPU/GPU performance. You'll notice:
-- Smoother scrolling (60 fps)
-- Faster typing in the input box
-- Less UI jank when Claude streams responses
-- Reduced battery drain on laptops
+**You'll notice improvement in:**
+- Scrolling smoothness (less jank while scrolling)
+- Less CPU during scroll (no paint/layout for hidden)
+
+**You WON'T notice improvement in:**
+- The 2-4 second freezes (that's GC/JS, not rendering)
+- Memory usage (all nodes still in DOM)
+- Initial page slowdown on long sessions
 
 ### Detection Strategy (v3.5.0)
 
@@ -145,6 +158,24 @@ Issues and PRs welcome! Key areas:
 - Add tests in `tests/` folder
 - Run `npm test` before committing
 
+## The Real Fix
+
+The core performance issues (GC, memory, React re-renders) can only be fixed by Anthropic implementing **virtualized message lists** - where only visible messages exist in the DOM.
+
+Apps like Discord and Slack handle thousands of messages smoothly because they only render what's on screen.
+
+**Feature request:** https://github.com/anthropics/claude-code/issues
+
+## Future: Aggressive Mode (Experimental)
+
+We're exploring riskier approaches that could genuinely help:
+
+1. **DOM Removal** - Actually remove old messages (breaks React but frees memory)
+2. **Flatten Code Blocks** - Replace 100s of syntax spans with plain text
+3. **Detach Event Listeners** - Clone nodes without handlers
+
+These are documented in `CLAUDE.md` under "Aggressive Performance Options". They WILL break with Claude.ai updates but could provide real memory relief.
+
 ## License
 
 MIT
@@ -152,3 +183,5 @@ MIT
 ---
 
 *Built with Claude, for Claude users* 🤖
+
+**Honest about our limits** - This extension helps with scrolling, not the fundamental performance issues.
